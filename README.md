@@ -21,7 +21,7 @@ pnpm start ask
 
 Non-interactive (what an agent shells out to):
 ```bash
-pnpm start ask \
+node --import tsx src/cli.ts ask \
   --channel 123... --owner 234... \
   --question "Zero-commitment investor — what should the digest do?" \
   --option "Skip them|no row" \

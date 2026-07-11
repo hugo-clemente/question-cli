@@ -9,6 +9,7 @@ import {
 import { tally, type PollState } from "./poll.ts";
 
 type CustomIdKind = "vote" | "decide" | "other";
+const EMBED_DESCRIPTION_MAX = 4096;
 
 export function customId(pollId: string, kind: CustomIdKind): string {
   return `qcli:${pollId}:${kind}`;
@@ -34,7 +35,12 @@ function embed(s: PollState, overrideStatus?: string): EmbedBuilder {
         ? "Expired - no decision"
         : `<@${s.ownerUserId}> decides - closes <t:${Math.floor(s.deadlineAt / 1000)}:R>`);
 
-  return new EmbedBuilder().setTitle(s.question).setDescription(`${lines.join("\n")}\n\n${statusLine}`);
+  const description = `${s.question}\n\n${lines.join("\n")}\n\n${statusLine}`;
+  const cappedDescription = description.length > EMBED_DESCRIPTION_MAX
+    ? `${description.slice(0, EMBED_DESCRIPTION_MAX - 3)}…`
+    : description;
+
+  return new EmbedBuilder().setDescription(cappedDescription);
 }
 
 function optionLabel(label: string): string {

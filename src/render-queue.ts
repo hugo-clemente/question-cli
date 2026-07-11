@@ -1,6 +1,7 @@
 export type RenderQueue = {
   schedule(): void;
   flush(): Promise<void>;
+  whenIdle(): Promise<void>;
   cancel(): void;
 };
 
@@ -46,6 +47,9 @@ export function createRenderQueue(edit: () => Promise<void>, debounceMs: number)
       }, debounceMs);
     },
     flush,
+    async whenIdle() {
+      if (inFlight) await inFlight;
+    },
     cancel() {
       if (timer) clearTimeout(timer);
       timer = null;

@@ -42,8 +42,16 @@ async function main(): Promise<void> {
 
   try {
     const result = await runPoll(resolved.config, token, ac.signal);
-    if (resolved.out) writeJsonAtomic(resolved.out, result);
     process.stdout.write(JSON.stringify(result) + "\n");
+    if (resolved.out) {
+      try {
+        writeJsonAtomic(resolved.out, result);
+      } catch (e) {
+        console.error(`--out write failed: ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      }
+    }
+    process.exit(0);
   } catch (e) {
     console.error(ac.signal.aborted ? "interrupted" : e instanceof Error ? e.message : String(e));
     process.exit(1);

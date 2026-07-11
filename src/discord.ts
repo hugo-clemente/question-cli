@@ -100,7 +100,7 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     };
 
     const fatal = (e: unknown) => {
-      if (completed) return;
+      if (completed || closing) return;
       completed = true;
       closing = true;
       clearDeadline();
@@ -112,14 +112,20 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
 
     const finishResolved = async () => {
       if (completed || closing) return;
+      if (!message) return fatal(new Error("poll message was not posted"));
       closing = true;
       clearDeadline();
+      renderQueue.cancel();
       try {
-        await renderQueue.flush();
+        await renderQueue.whenIdle();
       } catch {
-        return;
+        // Best-effort wait only. Still attempt the terminal cleanup edit.
       }
-      if (!message) return fatal(new Error("poll message was not posted"));
+      try {
+        await message.edit(renderResolved(state) as never);
+      } catch {
+        // Best-effort terminal cleanup only. A known decision still resolves.
+      }
       completed = true;
       signal?.removeEventListener("abort", onAbort);
       const out = { ...result(state), messageId: message.id, channelId: config.channelId };
@@ -132,6 +138,11 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
       closing = true;
       clearDeadline();
       renderQueue.cancel();
+      try {
+        await renderQueue.whenIdle();
+      } catch {
+        // Best-effort wait only. Still attempt the aborted cleanup edit.
+      }
       try {
         if (message) await message.edit(renderAborted(state) as never);
       } catch {
@@ -226,7 +237,7 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
           await interaction.showModal(modal as never); // must be the initial response — never defer first
         } else if (interaction.isModalSubmit() && parsed.kind === "othermodal") {
           const text = interaction.fields.getTextInputValue("text");
-          await interaction.deferReply({ flags: MessageFlags.Ephemeral } as never);
+          await interaction.deferReply({ ephemeral: true });
           const r = await runOther(interaction.user.id, text);
           if (r.ok) {
             if (!channel) throw new Error("channel unavailable");
