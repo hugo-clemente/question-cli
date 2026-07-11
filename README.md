@@ -35,3 +35,5 @@ Result (stdout, JSON only):
 ```
 
 `status` is `decided` or `expired` (deadline hit with no owner decision — never auto-picks).
+
+**Read stdout regardless of exit code.** On success the CLI prints the result JSON to stdout and exits 0. If `--out` is given and its file write fails *after* the poll resolved, the CLI still prints the result JSON to stdout, reports the file error on stderr, and exits non-zero — so a non-zero exit with valid JSON on stdout means "resolved, but couldn't write `--out`." Errors before a resolution (bad config, missing token, interrupt) print no stdout JSON.

@@ -140,7 +140,12 @@ mapping Discord interactions to core operations.
 #### Rendering
 
 The poll message is one bot-owned message containing an embed plus components.
-The message is edited in place as state changes.
+The message is edited in place as state changes. The **question is rendered in the
+embed description**, not the title — a Discord embed title caps at 256 chars while
+a question may be up to 2000. The assembled description (question + option lines +
+status) is hard-capped at Discord's 4096-char limit (sliced with an ellipsis), so
+a valid config can never fail the send; the full option text is always shown
+natively in the ballot select regardless.
 
 Component layout:
 
@@ -295,9 +300,13 @@ Validation:
 - "Other" note input is capped at 1000 characters in v1 even though Discord text
   inputs allow more.
 - No input is silently truncated. Invalid input exits before posting.
-- `--out` is written atomically where the filesystem supports rename. If `--out`
-  fails, the CLI reports the error on stderr, prints no stdout JSON, and exits
-  non-zero.
+- `--out` is written atomically where the filesystem supports rename. On success
+  the CLI prints the result JSON to stdout **first**, then writes `--out`; if the
+  `--out` write fails, it reports the error on stderr and exits non-zero, but the
+  stdout JSON was already emitted (a resolved decision is never discarded over an
+  optional-file disk error). Errors *before* a resolution still print no stdout
+  JSON. (Revised from the original all-or-nothing rule per an explicit decision —
+  the agent-shell-out caller should read stdout regardless of exit code.)
 
 ### Internal config shape
 
