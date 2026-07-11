@@ -1,15 +1,31 @@
 import {
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   EmbedBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } from "discord.js";
 import { tally, type PollState } from "./poll.ts";
 
-type CustomIdKind = "vote" | "decide" | "other";
+type CustomIdKind = "vote" | "decide";
 const EMBED_DESCRIPTION_MAX = 4096;
+const FIELD_NAME_MAX = 256;
+const FIELD_VALUE_MAX = 1024;
+
+// Voter mentions inside an embed field render as names but do NOT ping. Greedily fit under the 1024 cap.
+function voterList(ids: string[]): string {
+  if (ids.length === 0) return "—";
+  const mentions = ids.map((id) => `<@${id}>`);
+  const kept: string[] = [];
+  for (let i = 0; i < mentions.length; i++) {
+    const candidate = [...kept, mentions[i]!].join(" ");
+    const suffix = ` … +${mentions.length - i} more`;
+    if (candidate.length + (i < mentions.length - 1 ? suffix.length : 0) > FIELD_VALUE_MAX) {
+      return `${kept.join(" ")} … +${mentions.length - i} more`;
+    }
+    kept.push(mentions[i]!);
+  }
+  return kept.join(" ");
+}
 
 export function customId(pollId: string, kind: CustomIdKind): string {
   return `qcli:${pollId}:${kind}`;
@@ -23,10 +39,6 @@ export function parseCustomId(id: string): { pollId: string; kind: string } | nu
 
 function embed(s: PollState, overrideStatus?: string): EmbedBuilder {
   const counts = tally(s);
-  const lines = s.options.map((o) => {
-    const description = o.description ? ` - ${o.description}` : "";
-    return `**${o.key}.** ${o.label}${description} - \`${counts[o.key]!.length}\``;
-  });
   const statusLine =
     overrideStatus ??
     (s.status === "decided"
@@ -35,12 +47,19 @@ function embed(s: PollState, overrideStatus?: string): EmbedBuilder {
         ? "Expired - no decision"
         : `<@${s.ownerUserId}> decides - closes <t:${Math.floor(s.deadlineAt / 1000)}:R>`);
 
-  const description = `${s.question}\n\n${lines.join("\n")}\n\n${statusLine}`;
+  const description = `${s.question}\n\n${statusLine}`;
   const cappedDescription = description.length > EMBED_DESCRIPTION_MAX
     ? `${description.slice(0, EMBED_DESCRIPTION_MAX - 3)}…`
     : description;
 
-  return new EmbedBuilder().setDescription(cappedDescription);
+  // One field per option shows who voted for it (mentions don't ping inside embeds).
+  const fields = s.options.map((o) => {
+    const voters = counts[o.key]!;
+    const name = `${o.key}. ${o.label} (${voters.length})`;
+    return { name: name.slice(0, FIELD_NAME_MAX), value: voterList(voters), inline: true };
+  });
+
+  return new EmbedBuilder().setDescription(cappedDescription).addFields(fields);
 }
 
 function optionLabel(label: string): string {
@@ -71,17 +90,12 @@ function decideSelect(s: PollState): StringSelectMenuBuilder {
     .addOptions(s.options.map((o) => new StringSelectMenuOptionBuilder().setLabel(optionLabel(o.label)).setValue(o.key)));
 }
 
-function otherButton(s: PollState): ButtonBuilder {
-  return new ButtonBuilder().setCustomId(customId(s.pollId, "other")).setLabel("Other...").setStyle(ButtonStyle.Secondary);
-}
-
 export function renderMessage(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
   return {
     embeds: [embed(s)],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(ballotSelect(s)),
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(decideSelect(s)),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(otherButton(s)),
     ],
   };
 }

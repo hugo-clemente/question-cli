@@ -8,6 +8,7 @@ Flags:
   --channel <id>            target Discord channel ID
   --owner <userId>          the decider's Discord user ID
   --question <text>         the question
+  --title <text>            short title for the discussion thread (default: question's first line)
   --option "<label>|<desc>" repeatable; 2-25 options (desc optional)
   --select single|multi     ballot type (default single)
   --deadline <dur>          e.g. 24h, 90m (default 24h)
@@ -30,6 +31,7 @@ const options = {
   channel: { type: "string" },
   owner: { type: "string" },
   question: { type: "string" },
+  title: { type: "string" },
   option: { type: "string", multiple: true },
   select: { type: "string" },
   deadline: { type: "string" },
@@ -72,6 +74,7 @@ export async function resolveInput(argv: string[], isTTY: boolean): Promise<{ co
     channelId: stringValue(values.channel, "channel"),
     ownerUserId: stringValue(values.owner, "owner"),
     question: stringValue(values.question, "question"),
+    title: stringValue(values.title, "title"),
     select: stringValue(values.select, "select"),
     deadline: stringValue(values.deadline, "deadline"),
     options: stringArrayValue(values.option, "option")?.map(splitOption),
@@ -94,6 +97,16 @@ async function promptMissing(raw: RawConfig): Promise<void> {
   };
 
   raw.question ??= await ask("Question");
+
+  if (raw.title === undefined) {
+    const title = await p.text({ message: "Thread title (optional — defaults to the question's first line)" });
+    if (p.isCancel(title)) {
+      p.cancel("cancelled");
+      process.exit(1);
+    }
+    if (title) raw.title = title;
+  }
+
   raw.channelId ??= await ask("Channel ID");
   raw.ownerUserId ??= await ask("Owner user ID");
 

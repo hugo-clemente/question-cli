@@ -11,7 +11,6 @@ export type PollState = {
   deadlineAt: number;
   options: Option[];
   votes: Record<string, string[]>;
-  others: { userId: string; text: string; at: string }[];
   decision: string | null;
   decidedBy: string | null;
   startedAt: string;
@@ -48,16 +47,6 @@ export function applyDecision(s: PollState, userId: string, key: string, now: nu
   return ok();
 }
 
-export function applyOther(s: PollState, userId: string, text: string, now: number): OpResult {
-  if (s.status !== "open") return err("poll not open");
-  if (now >= s.deadlineAt) return err("deadline passed");
-  const clean = text.trim();
-  if (!clean) return err("empty note");
-  if (clean.length > 1000) return err("note too long");
-  s.others.push({ userId, text: clean, at: new Date(now).toISOString() });
-  return ok();
-}
-
 export function expire(s: PollState, now: number): void {
   if (s.status === "open" && now >= s.deadlineAt) {
     s.status = "expired";
@@ -83,7 +72,6 @@ export type PollResult = {
   decision: string | null;
   decidedBy: string | null;
   tally: Record<string, string[]>;
-  others: PollState["others"];
   startedAt: string;
   resolvedAt: string | null;
 };
@@ -94,7 +82,6 @@ export function result(s: PollState): PollResult {
     decision: s.decision,
     decidedBy: s.decidedBy,
     tally: tally(s),
-    others: s.others,
     startedAt: s.startedAt,
     resolvedAt: s.resolvedAt,
   };

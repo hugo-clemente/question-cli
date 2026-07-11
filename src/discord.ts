@@ -1,11 +1,10 @@
 import {
   Client, GatewayIntentBits, Events, ChannelType, MessageFlags, PermissionFlagsBits,
-  ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,
   type Interaction, type Message, type SendableChannels, type User,
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import {
-  applyVote, applyDecision, applyOther, expire, isResolved, result,
+  applyVote, applyDecision, expire, isResolved, result,
   type PollState, type PollResult,
 } from "./poll.ts";
 import { renderAborted, renderMessage, renderResolved, parseCustomId } from "./render.ts";
@@ -13,7 +12,15 @@ import { createRenderQueue } from "./render-queue.ts";
 import type { Config } from "./config.ts";
 
 const RENDER_DEBOUNCE_MS = 800;
-type RunResult = PollResult & { messageId: string; channelId: string };
+type UserInfo = { username: string; displayName: string };
+type DiscussionMsg = { userId: string; text: string; at: string };
+type RunResult = PollResult & {
+  messageId: string;
+  channelId: string;
+  threadId: string | null;
+  discussion: DiscussionMsg[];
+  users: Record<string, UserInfo>;
+};
 type PermissionLike = { has(bit: bigint): boolean };
 type PermissionedSendable = SendableChannels & {
   permissionsFor?: (target: unknown) => PermissionLike | null;
@@ -45,8 +52,13 @@ function assertChannelPermissions(ch: SendableChannels, user: User): void {
   const c = ch as PermissionedSendable;
   const perms = c.permissionsFor?.(user);
   if (!perms) return;
-  const required = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
-  if (c.isThread?.()) required.push(PermissionFlagsBits.SendMessagesInThreads);
+  // A discussion thread is created on the poll message and read back at resolution.
+  const required = [
+    PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ReadMessageHistory,
+    PermissionFlagsBits.SendMessagesInThreads,
+  ];
+  if (!c.isThread?.()) required.push(PermissionFlagsBits.CreatePublicThreads);
   const missing = required.filter((bit) => !perms.has(bit));
   if (missing.length > 0) throw new Error("bot is missing required channel permissions");
 }
@@ -64,16 +76,21 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     const state: PollState = {
       pollId, question: config.question, ownerUserId: config.ownerUserId, status: "open", select: config.select,
       deadlineAt: 0, options: config.options,
-      votes: {}, others: [], decision: null, decidedBy: null,
+      votes: {}, decision: null, decidedBy: null,
       startedAt: "", resolvedAt: null,
     };
 
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
     let channel: SendableChannels | null = null;
     let message: Message | null = null;
+    let thread: Awaited<ReturnType<Message["startThread"]>> | null = null;
     let deadlineTimer: NodeJS.Timeout | null = null;
     let closing = false;
     let completed = false;
+
+    // Human-readable identity for everyone who appears in the result (voters, decider, thread authors).
+    const users = new Map<string, UserInfo>();
+    const noteUser = (u: User) => users.set(u.id, { username: u.username, displayName: u.globalName ?? u.username });
 
     // ponytail: in-memory state only; crash mid-poll => re-run. Snapshot+--resume is the documented upgrade path.
     let mutationQueue = Promise.resolve();
@@ -126,9 +143,17 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
       } catch {
         // Best-effort terminal cleanup only. A known decision still resolves.
       }
+      const discussion = await collectDiscussion();
       completed = true;
       signal?.removeEventListener("abort", onAbort);
-      const out = { ...result(state), messageId: message.id, channelId: config.channelId };
+      const out: RunResult = {
+        ...result(state),
+        messageId: message.id,
+        channelId: config.channelId,
+        threadId: thread?.id ?? null,
+        discussion,
+        users: Object.fromEntries(users),
+      };
       await client.destroy();
       resolve(out);
     };
@@ -169,6 +194,15 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
         state.startedAt = new Date(started).toISOString();
         state.deadlineAt = started + config.deadlineMs;
         message = await channel.send(renderMessage(state) as never);
+        // Create the discussion thread up front. If the poll already lives in a thread, reuse it (can't nest).
+        const target = channel as SendableChannels & { isThread?: () => boolean };
+        thread = target.isThread?.()
+          ? (channel as unknown as Awaited<ReturnType<Message["startThread"]>>)
+          : await message.startThread({ name: config.title });
+        await thread.send({
+          content: "💬 Discuss this here — replies in this thread are captured with the result.",
+          allowedMentions: { parse: [] },
+        });
         deadlineTimer = setTimeout(() => {
           void enqueue(() => {
             if (completed || closing) return false;
@@ -206,7 +240,7 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
           }
           await interaction.deferUpdate();
           const r = await enqueue(() => applyVote(state, interaction.user.id, interaction.values, now()));
-          if (r.ok) renderQueue.schedule();
+          if (r.ok) { noteUser(interaction.user); renderQueue.schedule(); }
           else await interaction.followUp(ephemeral(`Vote not recorded: ${r.reason}`));
         } else if (interaction.isStringSelectMenu() && parsed.kind === "decide") {
           if (interaction.user.id !== config.ownerUserId) {
@@ -224,42 +258,27 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
             await interaction.followUp(ephemeral(`Decision not recorded: ${r.reason}`));
             return;
           }
+          noteUser(interaction.user);
           await finishResolved();
-        } else if (interaction.isButton() && parsed.kind === "other") {
-          if (isResolved(state, now())) {
-            await interaction.reply(ephemeral("This poll is closed."));
-            return;
-          }
-          const modal = new ModalBuilder().setCustomId(`qcli:${pollId}:othermodal`).setTitle("Other answer")
-            .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(
-              new TextInputBuilder().setCustomId("text").setLabel("Your answer (a note for the owner)")
-                .setStyle(TextInputStyle.Paragraph).setMaxLength(1000).setRequired(true)));
-          await interaction.showModal(modal as never); // must be the initial response — never defer first
-        } else if (interaction.isModalSubmit() && parsed.kind === "othermodal") {
-          const text = interaction.fields.getTextInputValue("text");
-          await interaction.deferReply({ ephemeral: true });
-          const r = await runOther(interaction.user.id, text);
-          if (r.ok) {
-            if (!channel) throw new Error("channel unavailable");
-            try {
-              await channel.send({ content: `Other from <@${interaction.user.id}> on the poll: ${text}`, allowedMentions: { parse: [] } });
-            } catch (e) {
-              fatal(e);
-              return;
-            }
-            renderQueue.schedule();
-          }
-          await interaction.editReply(r.ok ? "Noted." : `Not recorded: ${r.reason}`);
         }
       } catch (e) {
         console.error("interaction error:", e instanceof Error ? e.message : e);
       }
     });
 
-    async function runOther(userId: string, text: string) {
-      let r = { ok: false, reason: "unknown" } as ReturnType<typeof applyOther>;
-      await enqueue(() => { r = applyOther(state, userId, text, now()); });
-      return r;
+    // Read the discussion thread at resolution. Best-effort: a fetch failure yields an empty list, never loses the result.
+    async function collectDiscussion(): Promise<DiscussionMsg[]> {
+      if (!thread) return [];
+      try {
+        const fetched = await thread.messages.fetch({ limit: 100 });
+        const msgs = [...fetched.values()]
+          .filter((m) => !m.author.bot)
+          .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        for (const m of msgs) noteUser(m.author);
+        return msgs.map((m) => ({ userId: m.author.id, text: m.content, at: new Date(m.createdTimestamp).toISOString() }));
+      } catch {
+        return [];
+      }
     }
 
     if (signal?.aborted) {

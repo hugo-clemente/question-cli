@@ -15,7 +15,6 @@ const s: PollState = {
     { key: "B", label: "Keep" },
   ],
   votes: { u1: ["A"] },
-  others: [],
   decision: null,
   decidedBy: null,
   startedAt: "2026-07-10T00:00:00Z",
@@ -28,12 +27,21 @@ test("customId round-trips", () => {
   assert.equal(parseCustomId("nope"), null);
 });
 
-test("open render carries ballot + decide selects and an Other button", () => {
+test("embed shows voters as mentions in per-option fields", () => {
+  const fields = renderMessage(s).embeds[0]!.toJSON().fields ?? [];
+  const a = fields.find((f) => f.name.startsWith("A."));
+  const b = fields.find((f) => f.name.startsWith("B."));
+  assert.match(a!.name, /\(1\)/);        // A has one voter
+  assert.match(a!.value, /<@u1>/);       // rendered as a mention
+  assert.equal(b!.value, "—");           // B has none
+});
+
+test("open render carries ballot + decide selects (no Other button)", () => {
   const m = renderMessage(s);
   const ids = m.components.flatMap((r) => r.components.map((c: any) => c.data.custom_id));
   assert.ok(ids.includes("qcli:p1:vote"));
   assert.ok(ids.includes("qcli:p1:decide"));
-  assert.ok(ids.includes("qcli:p1:other"));
+  assert.ok(!ids.includes("qcli:p1:other"));
 });
 
 test("open render includes the question in the embed description", () => {

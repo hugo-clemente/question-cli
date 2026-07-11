@@ -32,6 +32,16 @@ test("validateConfig accepts a good config", () => {
   assert.equal(c.options[1]!.key, "B");
 });
 
+test("title defaults to the question's first line, sliced to 100", () => {
+  assert.equal(validateConfig({ ...good, question: "A clean title\n\nlong body here" }).title, "A clean title");
+  assert.equal(validateConfig({ ...good, question: "x".repeat(200) }).title.length, 100);
+});
+
+test("explicit title is used and length-validated", () => {
+  assert.equal(validateConfig({ ...good, title: "My Title" }).title, "My Title");
+  assert.throws(() => validateConfig({ ...good, title: "x".repeat(101) }));
+});
+
 test("validateConfig rejects <2 or >25 options", () => {
   assert.throws(() => validateConfig({ ...good, options: [{ label: "only" }] }));
   const many = Array.from({ length: 26 }, (_, i) => ({ label: `o${i}` }));

@@ -6,6 +6,7 @@ export type RawConfig = {
   select?: string;
   deadline?: string;
   question?: string;
+  title?: string;
   options?: { label: string; description?: string }[];
 };
 
@@ -15,8 +16,11 @@ export type Config = {
   select: Select;
   deadlineMs: number;
   question: string;
+  title: string;
   options: Option[];
 };
+
+const THREAD_NAME_MAX = 100;
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const MIN_MS = 60_000;
@@ -54,6 +58,18 @@ export function validateConfig(raw: RawConfig): Config {
   const question = (raw.question ?? "").trim();
   if (question.length < 1 || question.length > 2000) throw new Error("question must be 1-2000 characters");
 
+  // A short title names the discussion thread. Explicit --title is validated; otherwise derive it from
+  // the question's first line (sliced to Discord's thread-name limit) so long questions don't garble it.
+  let title: string;
+  if (raw.title !== undefined) {
+    title = raw.title.trim();
+    if (title.length < 1 || title.length > THREAD_NAME_MAX) {
+      throw new Error(`title must be 1-${THREAD_NAME_MAX} characters`);
+    }
+  } else {
+    title = question.split(/\r?\n/)[0]!.trim().slice(0, THREAD_NAME_MAX);
+  }
+
   const opts = raw.options ?? [];
   if (opts.length < 2 || opts.length > 25) throw new Error("need between 2 and 25 options");
   for (const o of opts) {
@@ -69,6 +85,7 @@ export function validateConfig(raw: RawConfig): Config {
     select,
     deadlineMs: parseDuration(raw.deadline ?? "24h"),
     question,
+    title,
     options: assignKeys(opts),
   };
 }
