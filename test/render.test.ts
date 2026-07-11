@@ -36,6 +36,11 @@ test("open render carries ballot + decide selects and an Other button", () => {
   assert.ok(ids.includes("qcli:p1:other"));
 });
 
+test("open render includes the question in the embed description", () => {
+  const m = renderMessage(s);
+  assert.match(m.embeds[0]!.toJSON().description ?? "", /Q\?/);
+});
+
 test("ballot select uses option keys as values, min 1", () => {
   const m = renderMessage(s);
   const vote: any = m.components[0]!.components[0];
@@ -55,6 +60,20 @@ test("decision select labels do not exceed Discord's 100 char cap", () => {
   const long: PollState = { ...s, options: [{ key: "A", label: "x".repeat(100) }, { key: "B", label: "y" }] };
   const decide: any = renderMessage(long).components[1]!.components[0];
   assert.equal(decide.toJSON().options[0].label.length, 100);
+});
+
+test("embed description is capped to Discord's 4096 character limit", () => {
+  const long: PollState = {
+    ...s,
+    question: "Q".repeat(2000),
+    options: Array.from({ length: 25 }, (_, i) => ({
+      key: String.fromCharCode(65 + i),
+      label: `L${i}`.padEnd(100, "x"),
+      description: `D${i}`.padEnd(100, "y"),
+    })),
+  };
+  const description = renderMessage(long).embeds[0]!.toJSON().description ?? "";
+  assert.ok(description.length <= 4096);
 });
 
 test("aborted render disables components and says interrupted", () => {
