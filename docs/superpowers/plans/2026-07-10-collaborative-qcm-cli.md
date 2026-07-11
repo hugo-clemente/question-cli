@@ -4,13 +4,14 @@
 
 **Goal:** A CLI that posts one multiple-choice question to a Discord channel, collects votes via interactive components, lets a designated owner decide, and prints the resolved decision as JSON.
 
-**Architecture:** Three isolated units plus a pure renderer. `poll` core is a pure state machine (no I/O) holding all decision rules. `render` is a pure function turning poll state into a Discord message payload. `discord` is a thin adapter owning the gateway, interaction acks, rate-limit-coalesced edits, and the per-poll mutation queue. `cli` resolves input (flags via stdlib, prompts via clack) and runs one poll to completion.
+**Architecture:** Three isolated units plus a pure renderer. `poll` core is a pure state machine (no I/O) holding all decision rules. `render` is a pure function turning poll state into Discord message payloads. `render-queue` is a small tested scheduler used by the Discord adapter to coalesce edits without stale overwrites. `discord` owns the gateway, interaction acks, bot-token message edits, abort cleanup, deadline timer, and the per-poll mutation queue. `cli` resolves input (flags via stdlib, prompts via clack) and runs one poll to completion.
 
 **Tech Stack:** Node 20+ (ESM), TypeScript, `discord.js` v14, `@clack/prompts`, `node:util.parseArgs` (flags), `node:test` + `node:assert` (tests), `tsx` (run TS), `tsc` (typecheck only).
 
 ## Global Constraints
 
 - Node **>= 20** (stable `parseArgs`, `node:test`, `--import`); `"type": "module"`, ESM only.
+- Pin `discord.js` to a Node-20-compatible v14 line. Do not upgrade to the moving `main`/latest release without re-checking the package `engines.node` floor.
 - Only two runtime deps: `discord.js`, `@clack/prompts`. No commander/yargs/jest/vitest/dotenv.
 - Credentials: `DISCORD_BOT_TOKEN` env var. Missing → exit non-zero before connecting.
 - Gateway intents: **`GatewayIntentBits.Guilds` only** — never MessageContent/reaction/member intents.
@@ -32,21 +33,22 @@
 - `src/poll.ts` — pure state machine: types + `applyVote`/`applyDecision`/`applyOther`/`expire`/`tally`/`result`/`isResolved`.
 - `src/config.ts` — `Config`/`Option` types + `validateConfig` + `parseDuration` + `assignKeys`.
 - `src/input.ts` — `resolveInput(argv, isTTY)` → `{ config, out }`; flags via `parseArgs`, clack prompts for missing when TTY.
-- `src/render.ts` — pure `renderMessage(state)` / `renderResolved(state)` → `{ embeds, components }`.
-- `src/discord.ts` — `runPoll(config, token)` adapter: gateway, preflight, post, interaction queue, debounced edits, deadline timer.
-- `src/cli.ts` — entry (`#!/usr/bin/env node`): token check → resolveInput → runPoll → print JSON → exit.
-- `test/poll.test.ts`, `test/config.test.ts`, `test/input.test.ts`, `test/render.test.ts`.
+- `src/render.ts` — pure `renderMessage(state)` / `renderResolved(state)` / `renderAborted(state)` → `{ embeds, components }`.
+- `src/render-queue.ts` — tested debounce/flush scheduler used by `discord.ts`.
+- `src/discord.ts` — `runPoll(config, token, signal?)` adapter: gateway, preflight, post, interaction queue, debounced edits, deadline timer, abort cleanup.
+- `src/cli.ts` — entry (`#!/usr/bin/env -S node --import tsx`): resolve input/help → token check → runPoll → optional atomic `--out` → print JSON → exit.
+- `test/poll.test.ts`, `test/config.test.ts`, `test/input.test.ts`, `test/render.test.ts`, `test/render-queue.test.ts`.
 
 ---
 
 ### Task 1: Project scaffold + tooling
 
 **Files:**
-- Create: `package.json`, `tsconfig.json`, `.gitignore`, `.env.example`
+- Create: `package.json`, `tsconfig.json`, `.gitignore`, `.env.example`, `test/.gitkeep`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `pnpm test` (runs `node --import tsx --test`), `pnpm typecheck` (`tsc --noEmit`). Test glob `test/*.test.ts`.
+- Produces: `pnpm test` (runs `node --import tsx --test` over explicit `.ts` test paths from `find`), `pnpm typecheck` (`tsc --noEmit`).
 
 - [ ] **Step 1: Create `package.json`**
 
@@ -59,12 +61,12 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --test $(find test -name '*.test.ts' -type f | sort)",
     "start": "node --import tsx src/cli.ts"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
-    "discord.js": "^14.16.3"
+    "discord.js": "14.16.3"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
@@ -92,7 +94,7 @@
 }
 ```
 
-- [ ] **Step 3: Create `.gitignore` and `.env.example`**
+- [ ] **Step 3: Create `.gitignore`, `.env.example`, and `test/.gitkeep`**
 
 `.gitignore`:
 ```
@@ -106,6 +108,8 @@ node_modules
 DISCORD_BOT_TOKEN=your-bot-token-here
 ```
 
+`test/.gitkeep`: empty file so `find test ...` works before the first real test exists.
+
 - [ ] **Step 4: Install deps**
 
 Run: `pnpm install`
@@ -115,12 +119,13 @@ Expected: lockfile written, `node_modules` populated, no peer-dep errors.
 
 Run: `pnpm typecheck`
 Expected: exit 0 (no source yet, nothing to check → passes).
-Run: `node --import tsx --test test/*.test.ts` — Expected: "no test files found" is acceptable at this stage; the script is wired.
+Run: `pnpm test`
+Expected: exit 0 with `1..0` / zero tests. The script intentionally uses `find` instead of a shell glob because zsh rejects unmatched `test/*.test.ts`, and Node 20 does not auto-discover `.ts` tests unless they are passed explicitly.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add package.json tsconfig.json .gitignore .env.example pnpm-lock.yaml
+git add package.json tsconfig.json .gitignore .env.example test/.gitkeep pnpm-lock.yaml
 git commit -m "chore: scaffold TypeScript CLI project"
 ```
 
@@ -148,7 +153,7 @@ import { applyVote, type PollState } from "../src/poll.ts";
 
 function baseState(over: Partial<PollState> = {}): PollState {
   return {
-    pollId: "p1", ownerUserId: "owner", status: "open", select: "single",
+    pollId: "p1", question: "Q?", ownerUserId: "owner", status: "open", select: "single",
     deadlineAt: 1000, options: [{ key: "A", label: "A" }, { key: "B", label: "B" }],
     votes: {}, others: [], decision: null, decidedBy: null,
     startedAt: "2026-07-10T00:00:00Z", resolvedAt: null, ...over,
@@ -200,6 +205,7 @@ export type Option = { key: string; label: string; description?: string };
 
 export type PollState = {
   pollId: string;
+  question: string;
   ownerUserId: string;
   status: PollStatus;
   select: Select;
@@ -295,6 +301,14 @@ test("vote and Other after decision are rejected", () => {
   assert.equal(applyOther(s, "u1", "hi", 0).ok, false);
 });
 
+test("Other rejects empty and over-limit text", () => {
+  const s = baseState();
+  assert.equal(applyOther(s, "u1", "", 0).ok, false);
+  assert.equal(applyOther(s, "u1", "x".repeat(1001), 0).ok, false);
+  assert.deepEqual(applyOther(s, "u1", "valid note", 0), { ok: true });
+  assert.equal(s.others[0]!.text, "valid note");
+});
+
 test("expiry yields expired with nulls and full tally", () => {
   const s = baseState();
   applyVote(s, "u1", ["A"], 0);
@@ -319,6 +333,14 @@ test("isResolved true on decision or past deadline", () => {
   assert.equal(isResolved(s, 1000), true);
   applyDecision(s, "owner", "A", 0);
   assert.equal(isResolved(s, 0), true);
+});
+
+test("expire never overrides an owner decision", () => {
+  const s = baseState();
+  applyDecision(s, "owner", "A", 500);
+  expire(s, 1000);
+  assert.equal(s.status, "decided");
+  assert.equal(s.decision, "A");
 });
 ```
 
@@ -345,7 +367,10 @@ export function applyDecision(s: PollState, userId: string, key: string, now: nu
 export function applyOther(s: PollState, userId: string, text: string, now: number): OpResult {
   if (s.status !== "open") return err("poll not open");
   if (now >= s.deadlineAt) return err("deadline passed");
-  s.others.push({ userId, text, at: new Date(now).toISOString() });
+  const clean = text.trim();
+  if (!clean) return err("empty note");
+  if (clean.length > 1000) return err("note too long");
+  s.others.push({ userId, text: clean, at: new Date(now).toISOString() });
   return ok();
 }
 
@@ -363,10 +388,6 @@ export function isResolved(s: PollState, now: number): boolean {
 export function tally(s: PollState): Record<string, string[]> {
   const t: Record<string, string[]> = {};
   for (const o of s.options) t[o.key] = [];
-  for (const keys of Object.values(s.votes)) {
-    for (const k of keys) t[k]?.push(...[]) ?? undefined;
-  }
-  // fill after init to keep insertion order deterministic
   for (const [uid, keys] of Object.entries(s.votes)) {
     for (const k of keys) t[k]?.push(uid);
   }
@@ -396,27 +417,12 @@ export function result(s: PollState): PollResult {
 }
 ```
 
-Note: the first loop in `tally` only initializes empty arrays; delete the stray `t[k]?.push(...[]) ?? undefined;` line — it is a no-op left from drafting. Final `tally` body is: init empty arrays for every option, then one loop over `Object.entries(s.votes)` pushing `uid` into `t[k]`.
-
-- [ ] **Step 4: Clean `tally` to the minimal form**
-
-```ts
-export function tally(s: PollState): Record<string, string[]> {
-  const t: Record<string, string[]> = {};
-  for (const o of s.options) t[o.key] = [];
-  for (const [uid, keys] of Object.entries(s.votes)) {
-    for (const k of keys) t[k]?.push(uid);
-  }
-  return t;
-}
-```
-
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import tsx --test test/poll.test.ts`
 Expected: PASS (all Task 2 + Task 3 tests).
 
-- [ ] **Step 6: Typecheck + commit**
+- [ ] **Step 5: Typecheck + commit**
 
 ```bash
 pnpm typecheck
@@ -449,9 +455,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseDuration, assignKeys, validateConfig, type RawConfig } from "../src/config.ts";
 
-test("parseDuration handles h and m within 1min..7d", () => {
+test("parseDuration handles m, h, and d within 1min..7d", () => {
   assert.equal(parseDuration("24h"), 24 * 3600_000);
   assert.equal(parseDuration("90m"), 90 * 60_000);
+  assert.equal(parseDuration("7d"), 7 * 24 * 3600_000);
   assert.throws(() => parseDuration("0m"));
   assert.throws(() => parseDuration("8d"));
   assert.throws(() => parseDuration("banana"));
@@ -523,10 +530,10 @@ const MIN_MS = 60_000;
 const MAX_MS = 7 * 24 * 3600_000;
 
 export function parseDuration(text: string): number {
-  const m = /^(\d+)([mh])$/.exec(text.trim());
-  if (!m) throw new Error(`invalid deadline "${text}" — use e.g. 24h or 90m`);
+  const m = /^(\d+)([mhd])$/.exec(text.trim());
+  if (!m) throw new Error(`invalid deadline "${text}" — use e.g. 24h, 90m, or 7d`);
   const n = Number(m[1]);
-  const ms = m[2] === "h" ? n * 3600_000 : n * 60_000;
+  const ms = m[2] === "d" ? n * 24 * 3600_000 : m[2] === "h" ? n * 3600_000 : n * 60_000;
   if (ms < MIN_MS || ms > MAX_MS) throw new Error("deadline must be between 1 minute and 7 days");
   return ms;
 }
@@ -585,8 +592,9 @@ git commit -m "feat: config validation, duration parsing, key assignment"
 - Produces: `resolveInput(argv: string[], isTTY: boolean): Promise<{ config: Config; out?: string }>`.
   - Non-TTY: builds `RawConfig` from flags only; missing required field → throws before any prompt.
   - TTY: prompts (clack) for each missing field, then validates.
+  - Optional subcommand `ask` is accepted and ignored; any other positional is rejected.
   - `--option` is repeatable, format `"label|description"` (split on first `|`).
-  - `--help` prints usage to stdout and calls `process.exit(0)`.
+  - `--help` throws `HelpRequested` carrying `usage`; `cli.ts` is responsible for printing to stdout and exiting 0.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -594,9 +602,10 @@ git commit -m "feat: config validation, duration parsing, key assignment"
 // test/input.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveInput } from "../src/input.ts";
+import { HelpRequested, resolveInput } from "../src/input.ts";
 
 const flags = [
+  "ask",
   "--channel", "123456789012345678",
   "--owner", "234567890123456789",
   "--question", "Q?",
@@ -619,6 +628,17 @@ test("non-TTY full flags produce a valid config", async () => {
 test("non-TTY missing required field throws instead of prompting", async () => {
   await assert.rejects(resolveInput(["--channel", "123456789012345678"], false));
 });
+
+test("unknown positional is rejected", async () => {
+  await assert.rejects(resolveInput(["nope", ...flags.slice(1)], false), /unknown positional/);
+});
+
+test("--help is testable and does not exit inside resolveInput", async () => {
+  await assert.rejects(
+    resolveInput(["--help"], false),
+    (err) => err instanceof HelpRequested && err.usage.includes("question ask"),
+  );
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -634,7 +654,7 @@ import { parseArgs } from "node:util";
 import * as p from "@clack/prompts";
 import { validateConfig, type Config, type RawConfig } from "./config.ts";
 
-const USAGE = `question ask — post a collaborative multiple-choice question to Discord
+export const USAGE = `question ask — post a collaborative multiple-choice question to Discord
 
 Flags:
   --channel <id>            target Discord channel ID
@@ -648,46 +668,70 @@ Flags:
 
 Env: DISCORD_BOT_TOKEN (required)`;
 
+export class HelpRequested extends Error {
+  readonly usage: string;
+  constructor(usage = USAGE) {
+    super("help requested");
+    this.name = "HelpRequested";
+    this.usage = usage;
+  }
+}
+
 function splitOption(s: string): { label: string; description?: string } {
   const i = s.indexOf("|");
   if (i === -1) return { label: s };
   return { label: s.slice(0, i), description: s.slice(i + 1) };
 }
 
+const options = {
+  channel: { type: "string" },
+  owner: { type: "string" },
+  question: { type: "string" },
+  option: { type: "string", multiple: true },
+  select: { type: "string" },
+  deadline: { type: "string" },
+  out: { type: "string" },
+  help: { type: "boolean" },
+} as const;
+
+function stringValue(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  throw new Error(`--${name} must be a string`);
+}
+
+function stringArrayValue(value: unknown, name: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.every((v) => typeof v === "string")) return value;
+  throw new Error(`--${name} must be provided as one or more strings`);
+}
+
 export async function resolveInput(argv: string[], isTTY: boolean): Promise<{ config: Config; out?: string }> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: argv,
-    allowPositionals: false,
-    options: {
-      channel: { type: "string" },
-      owner: { type: "string" },
-      question: { type: "string" },
-      option: { type: "string", multiple: true },
-      select: { type: "string" },
-      deadline: { type: "string" },
-      out: { type: "string" },
-      help: { type: "boolean" },
-    },
+    allowPositionals: true,
+    strict: true,
+    options,
   });
 
-  if (values.help) {
-    process.stdout.write(USAGE + "\n");
-    process.exit(0);
+  if (values.help) throw new HelpRequested();
+  if (positionals.length > 1 || (positionals.length === 1 && positionals[0] !== "ask")) {
+    throw new Error(`unknown positional argument: ${positionals.join(" ")}`);
   }
 
   const raw: RawConfig = {
-    channelId: values.channel,
-    ownerUserId: values.owner,
-    question: values.question,
-    select: values.select,
-    deadline: values.deadline,
-    options: values.option?.map(splitOption),
+    channelId: stringValue(values.channel, "channel"),
+    ownerUserId: stringValue(values.owner, "owner"),
+    question: stringValue(values.question, "question"),
+    select: stringValue(values.select, "select"),
+    deadline: stringValue(values.deadline, "deadline"),
+    options: stringArrayValue(values.option, "option")?.map(splitOption),
   };
 
   if (isTTY) await promptMissing(raw);
 
   // validateConfig throws a user-facing Error for any missing/invalid field.
-  return { config: validateConfig(raw), out: values.out };
+  return { config: validateConfig(raw), out: stringValue(values.out, "out") };
 }
 
 async function promptMissing(raw: RawConfig): Promise<void> {
@@ -731,7 +775,7 @@ async function promptMissing(raw: RawConfig): Promise<void> {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --import tsx --test test/input.test.ts`
-Expected: PASS (both tests; the non-TTY path never touches clack).
+Expected: PASS (all tests; the non-TTY path never touches clack).
 
 - [ ] **Step 5: Typecheck + commit**
 
@@ -754,6 +798,7 @@ git commit -m "feat: input resolution via flags and clack prompts"
 - Produces:
   - `renderMessage(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] }` (open poll: ballot select + owner-decide select + Other button).
   - `renderResolved(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] }` (disabled components + status line).
+  - `renderAborted(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] }` (disabled components + aborted status; used only for SIGINT cleanup, never for result JSON).
   - `customId(pollId: string, kind: "vote"|"decide"|"other"): string` → `qcli:<pollId>:<kind>`.
   - `parseCustomId(id: string): { pollId: string; kind: string } | null`.
 
@@ -763,11 +808,11 @@ git commit -m "feat: input resolution via flags and clack prompts"
 // test/render.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderMessage, renderResolved, customId, parseCustomId } from "../src/render.ts";
+import { renderAborted, renderMessage, renderResolved, customId, parseCustomId } from "../src/render.ts";
 import type { PollState } from "../src/poll.ts";
 
 const s: PollState = {
-  pollId: "p1", ownerUserId: "owner", status: "open", select: "single",
+  pollId: "p1", question: "Q?", ownerUserId: "owner", status: "open", select: "single",
   deadlineAt: 9_999_999_999_999, options: [{ key: "A", label: "Skip", description: "no row" }, { key: "B", label: "Keep" }],
   votes: { u1: ["A"] }, others: [], decision: null, decidedBy: null,
   startedAt: "2026-07-10T00:00:00Z", resolvedAt: null,
@@ -799,7 +844,19 @@ test("ballot select uses option keys as values, min 1", () => {
 test("resolved render disables every component", () => {
   const decided: PollState = { ...s, status: "decided", decision: "A", decidedBy: "owner" };
   const m = renderResolved(decided);
-  for (const row of m.components) for (const c of row.components as any[]) assert.equal(c.data.disabled, true);
+  for (const row of m.components) for (const c of row.components as any[]) assert.equal(c.toJSON().disabled, true);
+});
+
+test("decision select labels do not exceed Discord's 100 char cap", () => {
+  const long: PollState = { ...s, options: [{ key: "A", label: "x".repeat(100) }, { key: "B", label: "y" }] };
+  const decide: any = renderMessage(long).components[1]!.components[0];
+  assert.equal(decide.toJSON().options[0].label.length, 100);
+});
+
+test("aborted render disables components and says interrupted", () => {
+  const m = renderAborted(s);
+  assert.match(m.embeds[0]!.toJSON().description ?? "", /Interrupted/);
+  for (const row of m.components) for (const c of row.components as any[]) assert.equal(c.toJSON().disabled, true);
 });
 ```
 
@@ -828,11 +885,12 @@ export function parseCustomId(id: string): { pollId: string; kind: string } | nu
   return { pollId: parts[1]!, kind: parts[2]! };
 }
 
-function embed(s: PollState): EmbedBuilder {
+function embed(s: PollState, overrideStatus?: string): EmbedBuilder {
   const t = tally(s);
   const lines = s.options.map((o) => `**${o.key}.** ${o.label}${o.description ? ` — ${o.description}` : ""}  ·  \`${t[o.key]!.length}\``);
   const statusLine =
-    s.status === "decided" ? `\n\n✅ **Decided: ${s.decision}** by <@${s.decidedBy}>`
+    overrideStatus ? `\n\n${overrideStatus}`
+    : s.status === "decided" ? `\n\n✅ **Decided: ${s.decision}** by <@${s.decidedBy}>`
     : s.status === "expired" ? `\n\n⏳ **Expired** — no decision`
     : `\n\n<@${s.ownerUserId}> decides · closes <t:${Math.floor(s.deadlineAt / 1000)}:R>`;
   return new EmbedBuilder().setTitle(s.question).setDescription(lines.join("\n") + statusLine);
@@ -856,7 +914,7 @@ function decideSelect(s: PollState): StringSelectMenuBuilder {
     .setCustomId(customId(s.pollId, "decide"))
     .setPlaceholder("Owner: decide…")
     .setMinValues(1).setMaxValues(1)
-    .addOptions(s.options.map((o) => new StringSelectMenuOptionBuilder().setLabel(`Decide ${o.key}: ${o.label}`).setValue(o.key)));
+    .addOptions(s.options.map((o) => new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.key)));
 }
 
 function otherButton(s: PollState): ButtonBuilder {
@@ -876,6 +934,15 @@ export function renderMessage(s: PollState): { embeds: EmbedBuilder[]; component
 
 export function renderResolved(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
   const m = renderMessage(s);
+  for (const row of m.components) for (const c of row.components) (c as any).setDisabled(true);
+  return m;
+}
+
+export function renderAborted(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
+  const m = {
+    embeds: [embed(s, "Interrupted — this local CLI run stopped before producing a result.")],
+    components: renderMessage(s).components,
+  };
   for (const row of m.components) for (const c of row.components) (c as any).setDisabled(true);
   return m;
 }
@@ -899,112 +966,297 @@ git commit -m "feat: pure Discord message rendering"
 ### Task 7: `discord` adapter — gateway, preflight, interactions, queue
 
 **Files:**
+- Create: `src/render-queue.ts`
 - Create: `src/discord.ts`
+- Test: `test/render-queue.test.ts`
 
 **Interfaces:**
-- Consumes: `Config` (`src/config.ts`); `PollState`/`applyVote`/`applyDecision`/`applyOther`/`expire`/`isResolved`/`result`/`PollResult` (`src/poll.ts`); `renderMessage`/`renderResolved`/`parseCustomId` (`src/render.ts`).
-- Produces: `runPoll(config: Config, token: string): Promise<PollResult & { messageId: string; channelId: string }>`.
+- Consumes: `Config` (`src/config.ts`); `PollState`/`applyVote`/`applyDecision`/`applyOther`/`expire`/`isResolved`/`result`/`PollResult` (`src/poll.ts`); `renderMessage`/`renderResolved`/`renderAborted`/`parseCustomId` (`src/render.ts`).
+- Produces: `createRenderQueue(edit, debounceMs)` and `runPoll(config: Config, token: string, signal?: AbortSignal): Promise<PollResult & { messageId: string; channelId: string }>`.
   - Resolves when the owner decides, the deadline expires, or a fatal adapter error occurs (rejects on fatal errors and on config/permission failures found in preflight).
+  - Rejects with `"interrupted"` after best-effort disabled/aborted message cleanup when `signal` aborts after posting.
 
-> **No automated test.** discord.js requires a live gateway; this task is verified by the manual checklist in Task 8. Keep all decision logic in `poll.ts` (already tested) — this module only wires I/O.
+> The live gateway path is still manually verified in Task 8, but the render debounce/flush behavior is automated here because it is easy to regress and does not require Discord.
 
-- [ ] **Step 1: Write the adapter**
+- [ ] **Step 1: Write failing render queue tests**
+
+```ts
+// test/render-queue.test.ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createRenderQueue } from "../src/render-queue.ts";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("schedule coalesces many requests into one debounced edit", async () => {
+  let edits = 0;
+  const q = createRenderQueue(async () => { edits += 1; }, 5);
+  q.schedule();
+  q.schedule();
+  q.schedule();
+  await sleep(20);
+  assert.equal(edits, 1);
+});
+
+test("flush waits for an in-flight edit and sends a pending latest edit", async () => {
+  let release!: () => void;
+  const calls: string[] = [];
+  const q = createRenderQueue(async () => {
+    calls.push(`edit-${calls.length + 1}`);
+    if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+  }, 5);
+
+  q.schedule();
+  await sleep(20);
+  assert.deepEqual(calls, ["edit-1"]);
+
+  q.schedule();
+  release();
+  await q.flush();
+
+  assert.deepEqual(calls, ["edit-1", "edit-2"]);
+});
+```
+
+- [ ] **Step 2: Implement `src/render-queue.ts`**
+
+```ts
+// src/render-queue.ts
+export type RenderQueue = {
+  schedule(): void;
+  flush(): Promise<void>;
+  cancel(): void;
+};
+
+export function createRenderQueue(edit: () => Promise<void>, debounceMs: number): RenderQueue {
+  let timer: NodeJS.Timeout | null = null;
+  let inFlight: Promise<void> | null = null;
+  let pending = false;
+
+  const run = async (): Promise<void> => {
+    do {
+      pending = false;
+      await edit();
+    } while (pending);
+  };
+
+  const flush = async (): Promise<void> => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    pending = true;
+
+    if (inFlight) {
+      await inFlight;
+      if (!pending) return;
+    }
+
+    inFlight = run();
+    try {
+      await inFlight;
+    } finally {
+      inFlight = null;
+    }
+  };
+
+  return {
+    schedule() {
+      pending = true;
+      if (timer || inFlight) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void flush().catch(() => undefined);
+      }, debounceMs);
+    },
+    flush,
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      pending = false;
+    },
+  };
+}
+```
+
+- [ ] **Step 3: Run queue tests to verify they pass**
+
+Run: `node --import tsx --test test/render-queue.test.ts`
+Expected: PASS (2 tests).
+
+- [ ] **Step 4: Write the adapter**
 
 ```ts
 // src/discord.ts
 import {
-  Client, GatewayIntentBits, Events, ChannelType,
+  Client, GatewayIntentBits, Events, ChannelType, MessageFlags, PermissionFlagsBits,
   ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,
-  type Interaction, type SendableChannels,
+  type Interaction, type Message, type SendableChannels, type User,
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import {
   applyVote, applyDecision, applyOther, expire, isResolved, result,
   type PollState, type PollResult,
 } from "./poll.ts";
-import { renderMessage, renderResolved, parseCustomId } from "./render.ts";
+import { renderAborted, renderMessage, renderResolved, parseCustomId } from "./render.ts";
+import { createRenderQueue } from "./render-queue.ts";
 import type { Config } from "./config.ts";
 
 const RENDER_DEBOUNCE_MS = 800;
+type RunResult = PollResult & { messageId: string; channelId: string };
+type PermissionLike = { has(bit: bigint): boolean };
+type PermissionedSendable = SendableChannels & {
+  permissionsFor?: (target: unknown) => PermissionLike | null;
+  isThread?: () => boolean;
+};
 
-export function runPoll(config: Config, token: string): Promise<PollResult & { messageId: string; channelId: string }> {
+const ephemeral = (content: string) => ({ content, flags: MessageFlags.Ephemeral });
+
+function isSendableTextChannel(ch: unknown): ch is SendableChannels {
+  return Boolean(
+    ch &&
+    typeof ch === "object" &&
+    "isTextBased" in ch &&
+    typeof ch.isTextBased === "function" &&
+    ch.isTextBased() &&
+    "send" in ch &&
+    typeof ch.send === "function",
+  );
+}
+
+function assertGuildChannel(ch: SendableChannels): void {
+  if ("type" in ch && (ch.type === ChannelType.DM || ch.type === ChannelType.GroupDM)) {
+    throw new Error("target must be a guild channel or thread, not a DM");
+  }
+  if (!("guild" in ch)) throw new Error("target must be a guild channel or thread");
+}
+
+function assertChannelPermissions(ch: SendableChannels, user: User): void {
+  const c = ch as PermissionedSendable;
+  const perms = c.permissionsFor?.(user);
+  if (!perms) return;
+  const required = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
+  if (c.isThread?.()) required.push(PermissionFlagsBits.SendMessagesInThreads);
+  const missing = required.filter((bit) => !perms.has(bit));
+  if (missing.length > 0) throw new Error("bot is missing required channel permissions");
+}
+
+function hasRuntimePermissions(interaction: Interaction): boolean {
+  return interaction.appPermissions.has(PermissionFlagsBits.ViewChannel) &&
+    interaction.appPermissions.has(PermissionFlagsBits.SendMessages) &&
+    interaction.appPermissions.has(PermissionFlagsBits.EmbedLinks);
+}
+
+export function runPoll(config: Config, token: string, signal?: AbortSignal): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const now = () => Date.now();
     const pollId = randomUUID().slice(0, 8);
     const state: PollState = {
-      pollId, ownerUserId: config.ownerUserId, status: "open", select: config.select,
-      deadlineAt: now() + config.deadlineMs, options: config.options,
+      pollId, question: config.question, ownerUserId: config.ownerUserId, status: "open", select: config.select,
+      deadlineAt: 0, options: config.options,
       votes: {}, others: [], decision: null, decidedBy: null,
-      startedAt: new Date(now()).toISOString(), resolvedAt: null,
+      startedAt: "", resolvedAt: null,
     };
 
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-    let messageId = "";
-    let channel: SendableChannels;
-    let settled = false;
+    let channel: SendableChannels | null = null;
+    let message: Message | null = null;
+    let deadlineTimer: NodeJS.Timeout | null = null;
+    let closing = false;
+    let completed = false;
 
     // ponytail: in-memory state only; crash mid-poll => re-run. Snapshot+--resume is the documented upgrade path.
-    const queue: Promise<void>[] = [];
-    const serialize = (fn: () => void) => {
-      const tail = (queue.at(-1) ?? Promise.resolve()).then(() => { fn(); });
-      queue.push(tail);
-      return tail;
+    let mutationQueue = Promise.resolve();
+    const enqueue = <T>(fn: () => T | Promise<T>): Promise<T> => {
+      const run = mutationQueue.then(fn, fn);
+      mutationQueue = run.then(() => undefined, () => undefined);
+      return run;
     };
 
-    let renderTimer: NodeJS.Timeout | null = null;
-    let editing = false;
-    let pending = false;
-    const flushRender = async () => {
-      if (editing) { pending = true; return; }
-      editing = true;
+    const renderQueue = createRenderQueue(async () => {
+      if (!message) return;
       try {
-        const payload = isResolved(state, now()) ? renderResolved(state) : renderMessage(state);
-        await channel.messages.edit(messageId, payload);
+        const payload = closing || state.status !== "open" ? renderResolved(state) : renderMessage(state);
+        await message.edit(payload);
       } catch (e) {
         fatal(e);
-        return;
-      } finally {
-        editing = false;
+        throw e;
       }
-      if (pending) { pending = false; void flushRender(); }
-    };
-    const scheduleRender = () => {
-      if (renderTimer) return;
-      renderTimer = setTimeout(() => { renderTimer = null; void flushRender(); }, RENDER_DEBOUNCE_MS);
-    };
+    }, RENDER_DEBOUNCE_MS);
 
-    const finish = async () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadlineTimer);
-      if (renderTimer) clearTimeout(renderTimer);
-      try { await channel.messages.edit(messageId, renderResolved(state)); } catch { /* best-effort */ }
-      const out = { ...result(state), messageId, channelId: config.channelId };
-      await client.destroy();
-      resolve(out);
+    const clearDeadline = () => {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      deadlineTimer = null;
     };
 
     const fatal = (e: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadlineTimer);
-      if (renderTimer) clearTimeout(renderTimer);
+      if (completed) return;
+      completed = true;
+      closing = true;
+      clearDeadline();
+      renderQueue.cancel();
+      signal?.removeEventListener("abort", onAbort);
       void client.destroy();
       reject(e instanceof Error ? e : new Error(String(e)));
     };
 
-    const deadlineTimer = setTimeout(() => {
-      serialize(() => expire(state, now())).then(finish);
-    }, config.deadlineMs);
+    const finishResolved = async () => {
+      if (completed || closing) return;
+      closing = true;
+      clearDeadline();
+      try {
+        await renderQueue.flush();
+      } catch {
+        return;
+      }
+      if (!message) return fatal(new Error("poll message was not posted"));
+      completed = true;
+      signal?.removeEventListener("abort", onAbort);
+      const out = { ...result(state), messageId: message.id, channelId: config.channelId };
+      await client.destroy();
+      resolve(out);
+    };
+
+    const abortPoll = async () => {
+      if (completed || closing) return;
+      closing = true;
+      clearDeadline();
+      renderQueue.cancel();
+      try {
+        if (message) await message.edit(renderAborted(state));
+      } catch {
+        // Best-effort cleanup only. The CLI still exits non-zero and prints no JSON.
+      }
+      completed = true;
+      signal?.removeEventListener("abort", onAbort);
+      await client.destroy();
+      reject(new Error("interrupted"));
+    };
+
+    function onAbort() {
+      void abortPoll();
+    }
 
     client.once(Events.ClientReady, async () => {
       try {
         const ch = await client.channels.fetch(config.channelId);
-        if (!ch || !ch.isTextBased() || !("send" in ch)) throw new Error("channel is not a sendable text channel");
-        if (ch.type === ChannelType.DM) throw new Error("target must be a guild channel");
-        channel = ch as SendableChannels;
-        const msg = await channel.send(renderMessage(state));
-        messageId = msg.id;
+        if (!isSendableTextChannel(ch)) throw new Error("channel is not a sendable text channel");
+        assertGuildChannel(ch);
+        assertChannelPermissions(ch, client.user!);
+        channel = ch;
+        const started = now();
+        state.startedAt = new Date(started).toISOString();
+        state.deadlineAt = started + config.deadlineMs;
+        message = await channel.send(renderMessage(state));
+        deadlineTimer = setTimeout(() => {
+          void enqueue(() => {
+            if (completed || closing) return false;
+            expire(state, now());
+            return state.status === "expired";
+          }).then((expired) => {
+            if (expired) void finishResolved();
+          }).catch(fatal);
+        }, Math.max(0, state.deadlineAt - now()));
       } catch (e) {
         fatal(e);
       }
@@ -1016,22 +1268,45 @@ export function runPoll(config: Config, token: string): Promise<PollResult & { m
       if (!parsed || parsed.pollId !== pollId) return; // ignore other polls / stray interactions
 
       try {
+        if (!interaction.isRepliable()) return;
+        if (completed || closing) {
+          await interaction.reply(ephemeral("This poll is closed."));
+          return;
+        }
+        if (!hasRuntimePermissions(interaction)) {
+          await interaction.reply(ephemeral("The bot no longer has the channel permissions needed for this poll."));
+          return;
+        }
+
         if (interaction.isStringSelectMenu() && parsed.kind === "vote") {
-          const r = applyVoteNow(interaction.user.id, interaction.values);
+          if (isResolved(state, now())) {
+            await interaction.reply(ephemeral("This poll is closed."));
+            return;
+          }
           await interaction.deferUpdate();
-          if (r.ok) scheduleRender();
+          const r = await enqueue(() => applyVote(state, interaction.user.id, interaction.values, now()));
+          if (r.ok) renderQueue.schedule();
+          else await interaction.followUp(ephemeral(`Vote not recorded: ${r.reason}`));
         } else if (interaction.isStringSelectMenu() && parsed.kind === "decide") {
           if (interaction.user.id !== config.ownerUserId) {
-            await interaction.reply({ content: "Only the owner can decide this poll.", ephemeral: true });
+            await interaction.reply(ephemeral("Only the owner can decide this poll."));
+            return;
+          }
+          if (isResolved(state, now())) {
+            await interaction.reply(ephemeral("This poll is closed."));
             return;
           }
           const key = interaction.values[0]!;
           await interaction.deferUpdate();
-          await serialize(() => { applyDecision(state, interaction.user.id, key, now()); });
-          if (state.status === "decided") await finish();
+          const r = await enqueue(() => applyDecision(state, interaction.user.id, key, now()));
+          if (!r.ok) {
+            await interaction.followUp(ephemeral(`Decision not recorded: ${r.reason}`));
+            return;
+          }
+          await finishResolved();
         } else if (interaction.isButton() && parsed.kind === "other") {
           if (isResolved(state, now())) {
-            await interaction.reply({ content: "This poll is closed.", ephemeral: true });
+            await interaction.reply(ephemeral("This poll is closed."));
             return;
           }
           const modal = new ModalBuilder().setCustomId(`qcli:${pollId}:othermodal`).setTitle("Other answer")
@@ -1039,68 +1314,52 @@ export function runPoll(config: Config, token: string): Promise<PollResult & { m
               new TextInputBuilder().setCustomId("text").setLabel("Your answer (a note for the owner)")
                 .setStyle(TextInputStyle.Paragraph).setMaxLength(1000).setRequired(true)));
           await interaction.showModal(modal); // must be the initial response — never defer first
-        } else if (interaction.isModalSubmit() && id === `qcli:${pollId}:othermodal`) {
+        } else if (interaction.isModalSubmit() && parsed.kind === "othermodal") {
           const text = interaction.fields.getTextInputValue("text");
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           const r = await runOther(interaction.user.id, text);
           if (r.ok) {
-            await channel.send({ content: `📝 Other from <@${interaction.user.id}> on the poll: ${text}`, allowedMentions: { parse: [] } });
-            scheduleRender();
+            if (!channel) throw new Error("channel unavailable");
+            try {
+              await channel.send({ content: `Other from <@${interaction.user.id}> on the poll: ${text}`, allowedMentions: { parse: [] } });
+            } catch (e) {
+              fatal(e);
+              return;
+            }
+            renderQueue.schedule();
           }
-          await interaction.editReply(r.ok ? "Noted — thanks." : `Not recorded: ${r.reason}`);
+          await interaction.editReply(r.ok ? "Noted." : `Not recorded: ${r.reason}`);
         }
       } catch (e) {
-        // A single interaction failure is not fatal to the poll; log and continue.
         console.error("interaction error:", e instanceof Error ? e.message : e);
       }
     });
 
-    // helpers that run the core mutation synchronously and return its result
-    function applyVoteNow(userId: string, values: string[]) {
-      let r = { ok: false } as ReturnType<typeof applyVote>;
-      // serialize keeps ordering; for votes we don't need the boolean downstream beyond render scheduling
-      void serialize(() => { r = applyVote(state, userId, values, now()); });
-      return applyVote(state, userId, values, now()); // immediate check for render decision
-    }
     async function runOther(userId: string, text: string) {
       let r = { ok: false, reason: "unknown" } as ReturnType<typeof applyOther>;
-      await serialize(() => { r = applyOther(state, userId, text, now()); });
+      await enqueue(() => { r = applyOther(state, userId, text, now()); });
       return r;
     }
 
+    if (signal?.aborted) {
+      void abortPoll();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     client.login(token).catch(fatal);
   });
 }
 ```
 
-Note on `applyVoteNow`: the double-apply above is wrong (it would record twice). Fix in Step 2.
-
-- [ ] **Step 2: Fix vote application to a single serialized mutation**
-
-Replace `applyVoteNow` and its call site so the vote is applied exactly once, inside the queue, and the render is scheduled from the queued result:
-
-```ts
-// in the InteractionCreate handler, vote branch:
-if (interaction.isStringSelectMenu() && parsed.kind === "vote") {
-  await interaction.deferUpdate();
-  await serialize(() => {
-    const r = applyVote(state, interaction.user.id, interaction.values, now());
-    if (r.ok) scheduleRender();
-  });
-}
-```
-
-Delete the `applyVoteNow` function entirely. (`applyVote` mutates `state.votes[userId]` idempotently — a replace, not an append — so even a duplicate call would be safe, but one call is correct and clearer.)
-
-- [ ] **Step 3: Typecheck**
+- [ ] **Step 5: Typecheck**
 
 Run: `pnpm typecheck`
-Expected: exit 0. Fix any discord.js type mismatches (e.g. `SendableChannels` import, `channel.messages.edit` availability) until clean.
+Expected: exit 0 with the adapter code above. The message edit path is `message.edit(...)`, not `channel.messages.edit`, so `SendableChannels` is only used for `send`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/discord.ts
+git add src/render-queue.ts src/discord.ts test/render-queue.test.ts
 git commit -m "feat: discord adapter — gateway, interactions, coalesced renders"
 ```
 
@@ -1118,51 +1377,63 @@ git commit -m "feat: discord adapter — gateway, interactions, coalesced render
 - [ ] **Step 1: Write `src/cli.ts`**
 
 ```ts
-#!/usr/bin/env node
-import { writeFileSync, renameSync } from "node:fs";
-import { resolveInput } from "./input.ts";
+#!/usr/bin/env -S node --import tsx
+import { renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { HelpRequested, resolveInput } from "./input.ts";
 import { runPoll } from "./discord.ts";
 
+type ResolvedInput = Awaited<ReturnType<typeof resolveInput>>;
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2));
+    renameSync(tmp, path);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+    throw e;
+  }
+}
+
 async function main(): Promise<void> {
+  let resolved: ResolvedInput;
+  try {
+    resolved = await resolveInput(process.argv.slice(2), Boolean(process.stdin.isTTY));
+  } catch (e) {
+    if (e instanceof HelpRequested) {
+      process.stdout.write(e.usage + "\n");
+      return;
+    }
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
+
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
     console.error("DISCORD_BOT_TOKEN is required");
     process.exit(1);
   }
 
-  let config, out;
-  try {
-    ({ config, out } = await resolveInput(process.argv.slice(2), Boolean(process.stdin.isTTY)));
-  } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  }
-
-  let aborted = false;
-  const onSignal = () => { aborted = true; };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
+  const ac = new AbortController();
+  const onSignal = () => ac.abort();
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 
   try {
-    const result = await runPoll(config, token);
-    if (aborted) { console.error("interrupted"); process.exit(1); }
-    if (out) {
-      const tmp = `${out}.tmp`;
-      writeFileSync(tmp, JSON.stringify(result, null, 2));
-      renameSync(tmp, out);
-    }
+    const result = await runPoll(resolved.config, token, ac.signal);
+    if (resolved.out) writeJsonAtomic(resolved.out, result);
     process.stdout.write(JSON.stringify(result) + "\n");
-    process.exit(0);
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    console.error(ac.signal.aborted ? "interrupted" : e instanceof Error ? e.message : String(e));
     process.exit(1);
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
 }
 
 void main();
 ```
-
-> Note: v1 SIGINT handling is best-effort at the CLI boundary — on interrupt it prints no result JSON and exits non-zero. The in-flight `runPoll` promise is abandoned; the process exit tears down the gateway. Deeper mid-poll abort (editing the message to a disabled/aborted state) is deferred with crash-resume.
 
 - [ ] **Step 2: Typecheck**
 
@@ -1181,7 +1452,7 @@ let a designated owner make the call, and get the decision back as JSON.
 
 ```bash
 pnpm install
-export DISCORD_BOT_TOKEN=...   # bot needs: View Channel, Send Messages, Embed Links
+export DISCORD_BOT_TOKEN=...   # bot needs: View Channel, Send Messages, Embed Links; Send Messages in Threads for threads
 ```
 
 Bot invite scope: `bot`. No privileged intents required.
@@ -1214,7 +1485,7 @@ Result (stdout, JSON only):
 - [ ] **Step 4: Run the full test suite + typecheck**
 
 Run: `pnpm test`
-Expected: PASS — all poll/config/input/render tests.
+Expected: PASS — all poll/config/input/render/render-queue tests.
 Run: `pnpm typecheck`
 Expected: exit 0.
 
@@ -1230,6 +1501,7 @@ Create a bot, invite it to a test guild channel, `export DISCORD_BOT_TOKEN`, the
 - [ ] "Other…" opens a modal (no defer first); submitting posts a visible note with no pings, and an ephemeral "Noted".
 - [ ] Owner using the decide select resolves the poll, disables components, prints `decided` JSON to stdout, and exits 0.
 - [ ] A separate run left until the 2 min deadline prints `expired` JSON with `decision: null` and exits 0.
+- [ ] Pressing Ctrl-C after the poll posts edits the poll message to disabled/interrupted state, prints no stdout JSON, and exits non-zero.
 - [ ] Pointing `--channel` at a channel the bot can't see exits non-zero with a clear stderr message and prints no stdout JSON.
 - [ ] `pnpm start ask --help` prints usage and exits 0; stdout contains only usage text.
 
@@ -1247,12 +1519,12 @@ git commit -m "feat: CLI entry, README, manual verification checklist"
 **Spec coverage:**
 - Core principle (owner decides, never auto-picks) → Task 3 (`applyDecision`, `expire`, `result`) + tests.
 - Three isolated units + pure renderer → Tasks 2/3 (poll), 6 (render), 7 (discord), 5 (input), 8 (cli).
-- Discord constraints (3s ack, no stale tokens, per-viewer visibility, select limits, min intents, coalesced edits, modal-as-initial-response) → Task 7 adapter + Global Constraints; option/limit caps → Task 4.
+- Discord constraints (3s ack, no stale tokens, per-viewer visibility, select limits, min intents, coalesced edits, modal-as-initial-response, final render flush) → Task 7 adapter + render-queue tests + Global Constraints; option/limit caps → Task 4.
 - Input: flags (`parseArgs`) + clack, TTY-gated, non-TTY-missing-exits → Task 5.
 - Result JSON shape + stdout purity + `--out` atomic write + exit codes → Task 8.
-- Testing (pure core self-checks; adapter manual) → Tasks 2–6 tests + Task 8 Step 5.
-- Out-of-scope cuts (crash-resume `ponytail:` marker, no ballot growth, no LLM, no Slack/Linear, no stdin-JSON) → honored; crash-resume marker in Task 7 Step 1.
+- Testing (pure core self-checks, input/render checks, render queue checks, adapter manual) → Tasks 2–7 tests + Task 8 Step 5.
+- Out-of-scope cuts (crash-resume `ponytail:` marker, no ballot growth, no LLM, no Slack/Linear, no stdin-JSON) → honored; crash-resume marker in Task 7 adapter step.
 
-**Placeholder scan:** No TBD/TODO. The one drafting artifact (`applyVoteNow` double-apply) is called out and fixed in Task 7 Step 2 rather than left silent.
+**Placeholder scan:** No placeholders. The flagged `applyVoteNow` double-apply is removed instead of documented as a later cleanup step.
 
-**Type consistency:** `OpResult`, `PollState`, `PollResult`, `Config`, `Option`, `Select` names match across tasks. `customId`/`parseCustomId` shared by render + adapter. `runPoll` return type (`PollResult & { messageId; channelId }`) matches `cli.ts` usage and the spec's result shape.
+**Type consistency:** `OpResult`, `PollState`, `PollResult`, `Config`, `Option`, `Select` names match across tasks. `PollState.question` is defined before render consumes it. `customId`/`parseCustomId` shared by render + adapter. `runPoll` return type (`PollResult & { messageId; channelId }`) plus optional `AbortSignal` matches `cli.ts` usage and the spec's result shape.
