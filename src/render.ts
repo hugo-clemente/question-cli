@@ -100,14 +100,20 @@ export function renderMessage(s: PollState): { embeds: EmbedBuilder[]; component
   };
 }
 
-export function renderResolved(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
-  const m = renderMessage(s);
-  for (const row of m.components) {
-    for (const c of row.components) {
-      c.setDisabled(true);
-    }
-  }
-  return m;
+// On resolution the poll becomes a clean conclusion: no components, no per-voter fields — just the
+// outcome and a compact final tally. The discussion lives on in the (archived) thread.
+export function renderConcluded(s: PollState): { embeds: EmbedBuilder[]; components: [] } {
+  const counts = tally(s);
+  const tallyLine = s.options.map((o) => `${o.key} \`${counts[o.key]!.length}\``).join(" · ");
+  const won = s.options.find((o) => o.key === s.decision);
+  const conclusion =
+    s.status === "decided"
+      ? `✅ **Decided: ${s.decision}${won ? ` — ${won.label}` : ""}** by <@${s.decidedBy}>`
+      : "⏳ **Expired** — no decision reached.";
+  const description = `${s.question}\n\n${conclusion}\n\nFinal tally: ${tallyLine}`;
+  const capped =
+    description.length > EMBED_DESCRIPTION_MAX ? `${description.slice(0, EMBED_DESCRIPTION_MAX - 3)}…` : description;
+  return { embeds: [new EmbedBuilder().setDescription(capped)], components: [] };
 }
 
 export function renderAborted(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {

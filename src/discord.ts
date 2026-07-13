@@ -7,7 +7,7 @@ import {
   applyVote, applyDecision, expire, isResolved, result,
   type PollState, type PollResult,
 } from "./poll.ts";
-import { renderAborted, renderMessage, renderResolved, parseCustomId } from "./render.ts";
+import { renderAborted, renderMessage, renderConcluded, parseCustomId } from "./render.ts";
 import { createRenderQueue } from "./render-queue.ts";
 import type { Config } from "./config.ts";
 
@@ -84,6 +84,7 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     let channel: SendableChannels | null = null;
     let message: Message | null = null;
     let thread: Awaited<ReturnType<Message["startThread"]>> | null = null;
+    let ownThread = false; // true only when we created the thread (so we don't archive a channel we were posted into)
     let deadlineTimer: NodeJS.Timeout | null = null;
     let closing = false;
     let completed = false;
@@ -103,7 +104,7 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     const renderQueue = createRenderQueue(async () => {
       if (!message) return;
       try {
-        const payload = closing || state.status !== "open" ? renderResolved(state) : renderMessage(state);
+        const payload = closing || state.status !== "open" ? renderConcluded(state) : renderMessage(state);
         await message.edit(payload as never);
       } catch (e) {
         fatal(e);
@@ -138,12 +139,21 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
       } catch {
         // Best-effort wait only. Still attempt the terminal cleanup edit.
       }
+      // Read the discussion before archiving the thread and destroying the client.
+      const discussion = await collectDiscussion();
       try {
-        await message.edit(renderResolved(state) as never);
+        await message.edit(renderConcluded(state) as never);
       } catch {
         // Best-effort terminal cleanup only. A known decision still resolves.
       }
-      const discussion = await collectDiscussion();
+      if (ownThread && thread) {
+        // One atomic edit: locking then archiving as two calls is flaky (archive can silently not take).
+        try {
+          await thread.edit({ locked: true, archived: true });
+        } catch (e) {
+          console.error("thread archive failed:", e instanceof Error ? e.message : e);
+        }
+      }
       completed = true;
       signal?.removeEventListener("abort", onAbort);
       const out: RunResult = {
@@ -196,9 +206,12 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
         message = await channel.send(renderMessage(state) as never);
         // Create the discussion thread up front. If the poll already lives in a thread, reuse it (can't nest).
         const target = channel as SendableChannels & { isThread?: () => boolean };
-        thread = target.isThread?.()
-          ? (channel as unknown as Awaited<ReturnType<Message["startThread"]>>)
-          : await message.startThread({ name: config.title });
+        if (target.isThread?.()) {
+          thread = channel as unknown as Awaited<ReturnType<Message["startThread"]>>;
+        } else {
+          thread = await message.startThread({ name: config.title });
+          ownThread = true;
+        }
         await thread.send({
           content: "💬 Discuss this here — replies in this thread are captured with the result.",
           allowedMentions: { parse: [] },

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderAborted, renderMessage, renderResolved, customId, parseCustomId } from "../src/render.ts";
+import { renderAborted, renderMessage, renderConcluded, customId, parseCustomId } from "../src/render.ts";
 import type { PollState } from "../src/poll.ts";
 
 const s: PollState = {
@@ -58,10 +58,18 @@ test("ballot select uses option keys as values, min 1", () => {
   assert.equal(json.max_values, 1);
 });
 
-test("resolved render disables every component", () => {
+test("concluded render drops all components and shows the outcome + final tally", () => {
   const decided: PollState = { ...s, status: "decided", decision: "A", decidedBy: "owner" };
-  const m = renderResolved(decided);
-  for (const row of m.components) for (const c of row.components as any[]) assert.equal(c.toJSON().disabled, true);
+  const m = renderConcluded(decided);
+  assert.equal(m.components.length, 0); // no selects left
+  const desc = m.embeds[0]!.toJSON().description ?? "";
+  assert.match(desc, /Decided: A/);
+  assert.match(desc, /Final tally:/);
+});
+
+test("concluded render for an expired poll says no decision", () => {
+  const expired: PollState = { ...s, status: "expired" };
+  assert.match(renderConcluded(expired).embeds[0]!.toJSON().description ?? "", /Expired/);
 });
 
 test("decision select labels do not exceed Discord's 100 char cap", () => {
