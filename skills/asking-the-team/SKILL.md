@@ -5,7 +5,9 @@ description: Use when facing a product decision, naming choice, or tradeoff a hu
 
 # Asking the Team
 
-Post a question to the team's Discord channel with `question-cli` and wait for a human decision. Requires a Discord bot token — pass it with `--token` or set `DISCORD_BOT_TOKEN` — plus the channel and owner IDs (project config or ask the user once).
+Post a question to the team's Discord channel with `question-cli` and wait for a human decision. Requires the `DISCORD_BOT_TOKEN` environment variable in the shell you run the command from (the CLI reads it automatically), plus the channel and owner IDs (project config or ask the user once).
+
+**Never handle the token value directly** — don't ask the user to paste it into the conversation, and don't write it into files or commands as a literal. If the CLI exits with `Discord bot token required`, ask the user to export `DISCORD_BOT_TOKEN` in their environment and retry.
 
 ## When to reach for this
 
@@ -19,7 +21,6 @@ Do NOT use it for decisions the code or docs already answer, or for pure impleme
 
 ```bash
 npx question-cli ask \
-  --token <DISCORD_BOT_TOKEN> \
   --channel <CHANNEL_ID> \
   --owner <OWNER_USER_ID> \
   --question "<question with enough context that someone on their phone can answer>" \

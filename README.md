@@ -112,7 +112,8 @@ Paste into your `CLAUDE.md` / `AGENTS.md` (fill in your channel and owner IDs):
 ## Asking the team
 
 When you hit a product decision, naming choice, or tradeoff you shouldn't make alone,
-ask the team on Discord (pass the bot token with --token, or set DISCORD_BOT_TOKEN):
+ask the team on Discord. The CLI reads DISCORD_BOT_TOKEN from the environment —
+never ask for or handle the token value directly:
 
     npx question-cli ask --channel <CHANNEL_ID> --owner <OWNER_ID> \
       --question "<the question, with enough context to answer it>" \
