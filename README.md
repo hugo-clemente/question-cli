@@ -125,7 +125,13 @@ ask the team on Discord (requires DISCORD_BOT_TOKEN in the environment):
   safest path or ask again with a longer deadline.
 ```
 
-A ready-made Claude Code skill lives in [`skills/asking-the-team/`](skills/asking-the-team/SKILL.md) — copy it into `.claude/skills/` in your project.
+Or install the ready-made skill straight into your agent ([Claude Code, Cursor, Codex, and 70+ others](https://skills.sh)):
+
+```bash
+npx skills add hugo-clemente/question-cli
+```
+
+The skill source lives in [`skills/asking-the-team/`](skills/asking-the-team/SKILL.md).
 
 ## Development
 
