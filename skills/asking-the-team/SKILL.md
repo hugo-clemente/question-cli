@@ -5,9 +5,9 @@ description: Use when facing a product decision, naming choice, or tradeoff a hu
 
 # Asking the Team
 
-Post a question to the team's Discord channel with `question-cli` and wait for a human decision. Requires the `DISCORD_BOT_TOKEN` environment variable in the shell you run the command from (the CLI reads it automatically), plus the channel and owner IDs (project config or ask the user once).
+Post a question to the team's Discord channel with `question-cli` and wait for a human decision. The CLI finds the bot token on its own — from a `.env` file in the working directory or a `DISCORD_BOT_TOKEN` env var — plus you need the channel and owner IDs (project config or ask the user once).
 
-**Never handle the token value directly** — don't ask the user to paste it into the conversation, and don't write it into files or commands as a literal. If the CLI exits with `Discord bot token required`, ask the user to export `DISCORD_BOT_TOKEN` in their environment and retry.
+**Never handle the token value directly** — don't ask the user to paste it into the conversation, and don't write it into files or commands as a literal. If the CLI exits with `Discord bot token required`, ask the user to add `DISCORD_BOT_TOKEN=<their token>` to the project's `.env` file themselves, then retry.
 
 ## When to reach for this
 

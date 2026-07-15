@@ -26,6 +26,13 @@ The CLI itself needs no install — the skill invokes it with `npx question-cli`
 1. Create an app at <https://discord.com/developers/applications>, add a bot, copy its token.
 2. Invite it with scope `bot` and permissions: **View Channel, Send Messages, Embed Links, Read Message History, Create Public Threads, Send Messages in Threads**.
 3. No privileged intents required.
+4. Drop the token in a `.env` file at your project root — the CLI picks it up automatically:
+
+```bash
+echo 'DISCORD_BOT_TOKEN=your-token' >> .env   # make sure .env is gitignored
+```
+
+(An exported `DISCORD_BOT_TOKEN` or `--token` flag also works.)
 
 ## Usage
 
@@ -112,8 +119,8 @@ Paste into your `CLAUDE.md` / `AGENTS.md` (fill in your channel and owner IDs):
 ## Asking the team
 
 When you hit a product decision, naming choice, or tradeoff you shouldn't make alone,
-ask the team on Discord. The CLI reads DISCORD_BOT_TOKEN from the environment —
-never ask for or handle the token value directly:
+ask the team on Discord. The CLI finds the bot token itself (project .env file or
+DISCORD_BOT_TOKEN env var) — never ask for or handle the token value directly:
 
     npx question-cli ask --channel <CHANNEL_ID> --owner <OWNER_ID> \
       --question "<the question, with enough context to answer it>" \

@@ -33,9 +33,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (!resolved.token && !process.env.DISCORD_BOT_TOKEN) {
+    try {
+      // Zero-setup token config: read ./.env so users don't have to export anything.
+      process.loadEnvFile();
+    } catch {
+      /* no .env file — fall through to the error below */
+    }
+  }
   const token = resolved.token ?? process.env.DISCORD_BOT_TOKEN;
   if (!token) {
-    console.error("Discord bot token required: pass --token or set DISCORD_BOT_TOKEN");
+    console.error(
+      "Discord bot token required: add DISCORD_BOT_TOKEN to a .env file in this directory, export it, or pass --token",
+    );
     process.exit(1);
   }
 
