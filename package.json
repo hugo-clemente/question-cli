@@ -1,11 +1,31 @@
 {
   "name": "question-cli",
   "version": "0.1.0",
+  "description": "Blocking Discord question primitive for coding agents: post a multiple-choice question, let humans vote and discuss, get the owner's decision back as JSON on stdout.",
+  "keywords": [
+    "agent",
+    "claude-code",
+    "cli",
+    "decision",
+    "discord",
+    "human-in-the-loop",
+    "llm",
+    "poll"
+  ],
+  "homepage": "https://github.com/hugo-clemente/question-cli#readme",
+  "bugs": "https://github.com/hugo-clemente/question-cli/issues",
+  "license": "MIT",
+  "author": "Hugo Clemente",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hugo-clemente/question-cli.git"
+  },
   "bin": {
     "question": "./dist/cli.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "type": "module",
   "scripts": {
