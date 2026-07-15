@@ -21,13 +21,19 @@ const flags = [
 ];
 
 test("non-TTY full flags produce a valid config", async () => {
-  const { config, out } = await resolveInput(flags, false);
+  const { config, out, token } = await resolveInput(flags, false);
   assert.equal(config.channelId, "123456789012345678");
   assert.equal(config.options[0]!.label, "Skip");
   assert.equal(config.options[0]!.description, "no row");
   assert.equal(config.options[1]!.description, undefined);
   assert.equal(config.deadlineMs, 12 * 3600_000);
   assert.equal(out, "/tmp/r.json");
+  assert.equal(token, undefined);
+});
+
+test("--token is passed through", async () => {
+  const { token } = await resolveInput([...flags, "--token", "abc.def.ghi"], false);
+  assert.equal(token, "abc.def.ghi");
 });
 
 test("non-TTY missing required field throws instead of prompting", async () => {

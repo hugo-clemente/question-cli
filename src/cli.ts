@@ -33,9 +33,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const token = process.env.DISCORD_BOT_TOKEN;
+  const token = resolved.token ?? process.env.DISCORD_BOT_TOKEN;
   if (!token) {
-    console.error("DISCORD_BOT_TOKEN is required");
+    console.error("Discord bot token required: pass --token or set DISCORD_BOT_TOKEN");
     process.exit(1);
   }
 

@@ -13,9 +13,8 @@ Flags:
   --select single|multi     ballot type (default single)
   --deadline <dur>          e.g. 24h, 90m (default 24h)
   --out <file>              also write result JSON here
-  --help                    show this help
-
-Env: DISCORD_BOT_TOKEN (required)`;
+  --token <token>           Discord bot token (falls back to DISCORD_BOT_TOKEN env var)
+  --help                    show this help`;
 
 export class HelpRequested extends Error {
   readonly usage: string;
@@ -36,6 +35,7 @@ const options = {
   select: { type: "string" },
   deadline: { type: "string" },
   out: { type: "string" },
+  token: { type: "string" },
   help: { type: "boolean" },
 } as const;
 
@@ -57,7 +57,10 @@ function stringArrayValue(value: unknown, name: string): string[] | undefined {
   throw new Error(`--${name} must be provided as one or more strings`);
 }
 
-export async function resolveInput(argv: string[], isTTY: boolean): Promise<{ config: Config; out?: string }> {
+export async function resolveInput(
+  argv: string[],
+  isTTY: boolean,
+): Promise<{ config: Config; out?: string; token?: string }> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -82,7 +85,11 @@ export async function resolveInput(argv: string[], isTTY: boolean): Promise<{ co
 
   if (isTTY) await promptMissing(raw);
 
-  return { config: validateConfig(raw), out: stringValue(values.out, "out") };
+  return {
+    config: validateConfig(raw),
+    out: stringValue(values.out, "out"),
+    token: stringValue(values.token, "token"),
+  };
 }
 
 async function promptMissing(raw: RawConfig): Promise<void> {

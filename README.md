@@ -14,10 +14,20 @@ No webhooks, no server, no state — one process per question.
 
 ## Install
 
+Install the agent skill ([Claude Code, Cursor, Codex, and 70+ other agents](https://skills.sh)):
+
 ```bash
-npm install -g question-cli   # or: npx question-cli
-export DISCORD_BOT_TOKEN=...
+npx skills add hugo-clemente/question-cli
 ```
+
+Or manually — clone the repo and copy the skill into your project:
+
+```bash
+git clone https://github.com/hugo-clemente/question-cli
+cp -r question-cli/skills/asking-the-team your-project/.claude/skills/
+```
+
+The CLI itself needs no install — the skill invokes it with `npx question-cli`.
 
 ## Discord bot setup (once)
 
@@ -30,7 +40,8 @@ export DISCORD_BOT_TOKEN=...
 Non-interactive — what an agent runs (all flags required when stdin isn't a TTY):
 
 ```bash
-question ask \
+npx question-cli ask \
+  --token "$DISCORD_BOT_TOKEN" \
   --channel 123456789012345678 \
   --owner 234567890123456789 \
   --question "Zero-commitment investor — what should the digest do?" \
@@ -40,7 +51,7 @@ question ask \
   --deadline 2h
 ```
 
-Interactive — run `question ask` in a terminal and clack prompts fill in whatever flags you omitted.
+Interactive — run `npx question-cli ask` in a terminal and clack prompts fill in whatever flags you omitted.
 
 | Flag                     | Meaning                                                 |
 | ------------------------ | ------------------------------------------------------- |
@@ -52,6 +63,7 @@ Interactive — run `question ask` in a terminal and clack prompts fill in whate
 | `--select single\|multi` | ballot type (default `single`)                          |
 | `--deadline <dur>`       | `90m`, `2h`, `1d` — 1 minute to 7 days (default `24h`)  |
 | `--out <file>`           | also write the result JSON to a file                    |
+| `--token <token>`        | Discord bot token (falls back to `DISCORD_BOT_TOKEN`)   |
 
 ## Output contract
 
@@ -108,7 +120,7 @@ Paste into your `CLAUDE.md` / `AGENTS.md` (fill in your channel and owner IDs):
 ## Asking the team
 
 When you hit a product decision, naming choice, or tradeoff you shouldn't make alone,
-ask the team on Discord (requires DISCORD_BOT_TOKEN in the environment):
+ask the team on Discord (pass the bot token with --token, or set DISCORD_BOT_TOKEN):
 
     npx question-cli ask --channel <CHANNEL_ID> --owner <OWNER_ID> \
       --question "<the question, with enough context to answer it>" \
@@ -125,13 +137,7 @@ ask the team on Discord (requires DISCORD_BOT_TOKEN in the environment):
   safest path or ask again with a longer deadline.
 ```
 
-Or install the ready-made skill straight into your agent ([Claude Code, Cursor, Codex, and 70+ others](https://skills.sh)):
-
-```bash
-npx skills add hugo-clemente/question-cli
-```
-
-The skill source lives in [`skills/asking-the-team/`](skills/asking-the-team/SKILL.md).
+The [installed skill](skills/asking-the-team/SKILL.md) covers the same ground — use one or the other.
 
 ## Development
 
