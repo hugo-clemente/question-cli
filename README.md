@@ -2,12 +2,18 @@
 
 **A blocking question primitive for coding agents.** Your agent hits a decision it shouldn't make alone — it shells out to `question-cli`, which posts a multiple-choice question to a Discord channel. Humans vote, discuss in an auto-created thread, and a designated owner makes the call. The command blocks until then, and the agent gets the decision — votes, discussion and all — as JSON on stdout.
 
-```
-agent ──► question-cli ──► Discord poll + discussion thread
-                │                    │ humans vote & talk
-                │◄── blocks ─────────┤ owner decides (or deadline)
-                ▼
-        JSON on stdout ──► agent continues with the answer
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant CLI as question-cli
+    participant Discord
+
+    Agent->>CLI: question ask --question ... --option ...
+    CLI->>Discord: post poll + create discussion thread
+    Note over Discord: humans vote & discuss
+    Note over CLI: blocks…
+    Discord->>CLI: owner decides (or deadline hits)
+    CLI->>Agent: result JSON on stdout
 ```
 
 No webhooks, no server, no state — one process per question.
