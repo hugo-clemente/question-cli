@@ -31,9 +31,9 @@ test("embed shows voters as mentions in per-option fields", () => {
   const fields = renderMessage(s).embeds[0]!.toJSON().fields ?? [];
   const a = fields.find((f) => f.name.startsWith("A."));
   const b = fields.find((f) => f.name.startsWith("B."));
-  assert.match(a!.name, /\(1\)/);        // A has one voter
-  assert.match(a!.value, /<@u1>/);       // rendered as a mention
-  assert.equal(b!.value, "—");           // B has none
+  assert.match(a!.name, /\(1\)/); // A has one voter
+  assert.match(a!.value, /<@u1>/); // rendered as a mention
+  assert.equal(b!.value, "—"); // B has none
 });
 
 test("open render carries ballot + decide selects (no Other button)", () => {
@@ -53,7 +53,10 @@ test("ballot select uses option keys as values, min 1", () => {
   const m = renderMessage(s);
   const vote: any = m.components[0]!.components[0];
   const json = vote.toJSON();
-  assert.deepEqual(json.options.map((o: any) => o.value), ["A", "B"]);
+  assert.deepEqual(
+    json.options.map((o: any) => o.value),
+    ["A", "B"],
+  );
   assert.equal(json.min_values, 1);
   assert.equal(json.max_values, 1);
 });
@@ -73,7 +76,13 @@ test("concluded render for an expired poll says no decision", () => {
 });
 
 test("decision select labels do not exceed Discord's 100 char cap", () => {
-  const long: PollState = { ...s, options: [{ key: "A", label: "x".repeat(100) }, { key: "B", label: "y" }] };
+  const long: PollState = {
+    ...s,
+    options: [
+      { key: "A", label: "x".repeat(100) },
+      { key: "B", label: "y" },
+    ],
+  };
   const decide: any = renderMessage(long).components[1]!.components[0];
   assert.equal(decide.toJSON().options[0].label.length, 100);
 });

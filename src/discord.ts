@@ -1,12 +1,17 @@
 import {
-  Client, GatewayIntentBits, Events, ChannelType, MessageFlags, PermissionFlagsBits,
-  type Interaction, type Message, type SendableChannels, type User,
+  Client,
+  GatewayIntentBits,
+  Events,
+  ChannelType,
+  MessageFlags,
+  PermissionFlagsBits,
+  type Interaction,
+  type Message,
+  type SendableChannels,
+  type User,
 } from "discord.js";
 import { randomUUID } from "node:crypto";
-import {
-  applyVote, applyDecision, expire, isResolved, result,
-  type PollState, type PollResult,
-} from "./poll.ts";
+import { applyVote, applyDecision, expire, isResolved, result, type PollState, type PollResult } from "./poll.ts";
 import { renderAborted, renderMessage, renderConcluded, parseCustomId } from "./render.ts";
 import { createRenderQueue } from "./render-queue.ts";
 import type { Config } from "./config.ts";
@@ -42,7 +47,10 @@ function isSendableTextChannel(ch: unknown): ch is SendableChannels {
 }
 
 function assertGuildChannel(ch: SendableChannels): void {
-  if ("type" in ch && ((ch.type as ChannelType) === ChannelType.DM || (ch.type as ChannelType) === ChannelType.GroupDM)) {
+  if (
+    "type" in ch &&
+    ((ch.type as ChannelType) === ChannelType.DM || (ch.type as ChannelType) === ChannelType.GroupDM)
+  ) {
     throw new Error("target must be a guild channel or thread, not a DM");
   }
   if (!("guild" in ch)) throw new Error("target must be a guild channel or thread");
@@ -54,8 +62,10 @@ function assertChannelPermissions(ch: SendableChannels, user: User): void {
   if (!perms) return;
   // A discussion thread is created on the poll message and read back at resolution.
   const required = [
-    PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
-    PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ReadMessageHistory,
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
+    PermissionFlagsBits.ReadMessageHistory,
     PermissionFlagsBits.SendMessagesInThreads,
   ];
   if (!c.isThread?.()) required.push(PermissionFlagsBits.CreatePublicThreads);
@@ -64,9 +74,11 @@ function assertChannelPermissions(ch: SendableChannels, user: User): void {
 }
 
 function hasRuntimePermissions(interaction: Interaction): boolean {
-  return interaction.appPermissions.has(PermissionFlagsBits.ViewChannel) &&
+  return (
+    interaction.appPermissions.has(PermissionFlagsBits.ViewChannel) &&
     interaction.appPermissions.has(PermissionFlagsBits.SendMessages) &&
-    interaction.appPermissions.has(PermissionFlagsBits.EmbedLinks);
+    interaction.appPermissions.has(PermissionFlagsBits.EmbedLinks)
+  );
 }
 
 export function runPoll(config: Config, token: string, signal?: AbortSignal): Promise<RunResult> {
@@ -74,10 +86,18 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     const now = () => Date.now();
     const pollId = randomUUID().slice(0, 8);
     const state: PollState = {
-      pollId, question: config.question, ownerUserId: config.ownerUserId, status: "open", select: config.select,
-      deadlineAt: 0, options: config.options,
-      votes: {}, decision: null, decidedBy: null,
-      startedAt: "", resolvedAt: null,
+      pollId,
+      question: config.question,
+      ownerUserId: config.ownerUserId,
+      status: "open",
+      select: config.select,
+      deadlineAt: 0,
+      options: config.options,
+      votes: {},
+      decision: null,
+      decidedBy: null,
+      startedAt: "",
+      resolvedAt: null,
     };
 
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -97,7 +117,10 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
     let mutationQueue = Promise.resolve();
     const enqueue = <T>(fn: () => T | Promise<T>): Promise<T> => {
       const run = mutationQueue.then(fn, fn);
-      mutationQueue = run.then(() => undefined, () => undefined);
+      mutationQueue = run.then(
+        () => undefined,
+        () => undefined,
+      );
       return run;
     };
 
@@ -216,15 +239,20 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
           content: "💬 Discuss this here — replies in this thread are captured with the result.",
           allowedMentions: { parse: [] },
         });
-        deadlineTimer = setTimeout(() => {
-          void enqueue(() => {
-            if (completed || closing) return false;
-            expire(state, now());
-            return state.status === "expired";
-          }).then((expired) => {
-            if (expired) void finishResolved();
-          }).catch(fatal);
-        }, Math.max(0, state.deadlineAt - now()));
+        deadlineTimer = setTimeout(
+          () => {
+            void enqueue(() => {
+              if (completed || closing) return false;
+              expire(state, now());
+              return state.status === "expired";
+            })
+              .then((expired) => {
+                if (expired) void finishResolved();
+              })
+              .catch(fatal);
+          },
+          Math.max(0, state.deadlineAt - now()),
+        );
       } catch (e) {
         fatal(e);
       }
@@ -253,8 +281,10 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
           }
           await interaction.deferUpdate();
           const r = await enqueue(() => applyVote(state, interaction.user.id, interaction.values, now()));
-          if (r.ok) { noteUser(interaction.user); renderQueue.schedule(); }
-          else await interaction.followUp(ephemeral(`Vote not recorded: ${r.reason}`));
+          if (r.ok) {
+            noteUser(interaction.user);
+            renderQueue.schedule();
+          } else await interaction.followUp(ephemeral(`Vote not recorded: ${r.reason}`));
         } else if (interaction.isStringSelectMenu() && parsed.kind === "decide") {
           if (interaction.user.id !== config.ownerUserId) {
             await interaction.reply(ephemeral("Only the owner can decide this poll."));
@@ -288,7 +318,11 @@ export function runPoll(config: Config, token: string, signal?: AbortSignal): Pr
           .filter((m) => !m.author.bot)
           .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
         for (const m of msgs) noteUser(m.author);
-        return msgs.map((m) => ({ userId: m.author.id, text: m.content, at: new Date(m.createdTimestamp).toISOString() }));
+        return msgs.map((m) => ({
+          userId: m.author.id,
+          text: m.content,
+          at: new Date(m.createdTimestamp).toISOString(),
+        }));
       } catch {
         return [];
       }

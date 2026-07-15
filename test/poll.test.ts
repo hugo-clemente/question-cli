@@ -1,21 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  applyDecision,
-  applyVote,
-  expire,
-  isResolved,
-  result,
-  tally,
-  type PollState,
-} from "../src/poll.ts";
+import { applyDecision, applyVote, expire, isResolved, result, tally, type PollState } from "../src/poll.ts";
 
 function baseState(over: Partial<PollState> = {}): PollState {
   return {
-    pollId: "p1", question: "Q?", ownerUserId: "owner", status: "open", select: "single",
-    deadlineAt: 1000, options: [{ key: "A", label: "A" }, { key: "B", label: "B" }],
-    votes: {}, decision: null, decidedBy: null,
-    startedAt: "2026-07-10T00:00:00Z", resolvedAt: null, ...over,
+    pollId: "p1",
+    question: "Q?",
+    ownerUserId: "owner",
+    status: "open",
+    select: "single",
+    deadlineAt: 1000,
+    options: [
+      { key: "A", label: "A" },
+      { key: "B", label: "B" },
+    ],
+    votes: {},
+    decision: null,
+    decidedBy: null,
+    startedAt: "2026-07-10T00:00:00Z",
+    resolvedAt: null,
+    ...over,
   };
 }
 

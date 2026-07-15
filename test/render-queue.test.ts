@@ -6,7 +6,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("schedule coalesces many requests into one debounced edit", async () => {
   let edits = 0;
-  const q = createRenderQueue(async () => { edits += 1; }, 5);
+  const q = createRenderQueue(async () => {
+    edits += 1;
+  }, 5);
   q.schedule();
   q.schedule();
   q.schedule();
@@ -19,7 +21,10 @@ test("flush waits for an in-flight edit and sends a pending latest edit", async 
   const calls: string[] = [];
   const q = createRenderQueue(async () => {
     calls.push(`edit-${calls.length + 1}`);
-    if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+    if (calls.length === 1)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
   }, 5);
 
   q.schedule();

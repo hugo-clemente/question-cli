@@ -15,11 +15,13 @@ Bot invite scope: `bot`. No privileged intents required.
 ## Use
 
 Interactive:
+
 ```bash
 pnpm start ask
 ```
 
 Non-interactive (what an agent shells out to):
+
 ```bash
 node --import tsx src/cli.ts ask \
   --channel 123... --owner 234... \
@@ -30,10 +32,21 @@ node --import tsx src/cli.ts ask \
 ```
 
 Result (stdout, JSON only):
+
 ```json
-{ "status": "decided", "decision": "A", "decidedBy": "234...", "tally": { "A": ["u1"], "B": [] }, "others": [], "messageId": "…", "channelId": "…", "startedAt": "…", "resolvedAt": "…" }
+{
+  "status": "decided",
+  "decision": "A",
+  "decidedBy": "234...",
+  "tally": { "A": ["u1"], "B": [] },
+  "others": [],
+  "messageId": "…",
+  "channelId": "…",
+  "startedAt": "…",
+  "resolvedAt": "…"
+}
 ```
 
 `status` is `decided` or `expired` (deadline hit with no owner decision — never auto-picks).
 
-**Read stdout regardless of exit code.** On success the CLI prints the result JSON to stdout and exits 0. If `--out` is given and its file write fails *after* the poll resolved, the CLI still prints the result JSON to stdout, reports the file error on stderr, and exits non-zero — so a non-zero exit with valid JSON on stdout means "resolved, but couldn't write `--out`." Errors before a resolution (bad config, missing token, interrupt) print no stdout JSON.
+**Read stdout regardless of exit code.** On success the CLI prints the result JSON to stdout and exits 0. If `--out` is given and its file write fails _after_ the poll resolved, the CLI still prints the result JSON to stdout, reports the file error on stderr, and exits non-zero — so a non-zero exit with valid JSON on stdout means "resolved, but couldn't write `--out`." Errors before a resolution (bad config, missing token, interrupt) print no stdout JSON.

@@ -1,9 +1,4 @@
-import {
-  ActionRowBuilder,
-  EmbedBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
-} from "discord.js";
+import { ActionRowBuilder, EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } from "discord.js";
 import { tally, type PollState } from "./poll.ts";
 
 type CustomIdKind = "vote" | "decide";
@@ -48,9 +43,8 @@ function embed(s: PollState, overrideStatus?: string): EmbedBuilder {
         : `<@${s.ownerUserId}> decides - closes <t:${Math.floor(s.deadlineAt / 1000)}:R>`);
 
   const description = `${s.question}\n\n${statusLine}`;
-  const cappedDescription = description.length > EMBED_DESCRIPTION_MAX
-    ? `${description.slice(0, EMBED_DESCRIPTION_MAX - 3)}…`
-    : description;
+  const cappedDescription =
+    description.length > EMBED_DESCRIPTION_MAX ? `${description.slice(0, EMBED_DESCRIPTION_MAX - 3)}…` : description;
 
   // One field per option shows who voted for it (mentions don't ping inside embeds).
   const fields = s.options.map((o) => {
@@ -87,7 +81,9 @@ function decideSelect(s: PollState): StringSelectMenuBuilder {
     .setPlaceholder("Owner: decide...")
     .setMinValues(1)
     .setMaxValues(1)
-    .addOptions(s.options.map((o) => new StringSelectMenuOptionBuilder().setLabel(optionLabel(o.label)).setValue(o.key)));
+    .addOptions(
+      s.options.map((o) => new StringSelectMenuOptionBuilder().setLabel(optionLabel(o.label)).setValue(o.key)),
+    );
 }
 
 export function renderMessage(s: PollState): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
