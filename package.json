@@ -1,13 +1,22 @@
 {
   "name": "question-cli",
   "version": "0.1.0",
+  "bin": {
+    "question": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "bin": { "question": "./src/cli.ts" },
-  "engines": { "node": ">=20" },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test $(find test -name '*.test.ts' -type f | sort)",
-    "start": "node --import tsx src/cli.ts"
+    "start": "node --import tsx src/cli.ts",
+    "lint": "vp lint",
+    "format": "vp fmt --write",
+    "check": "vp check",
+    "build": "vp pack",
+    "prepublishOnly": "vp pack"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
@@ -16,6 +25,10 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vite-plus": "^0.2.4"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

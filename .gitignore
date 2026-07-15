@@ -1,3 +1,27 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Environment
 .env
+.env.*
+!.env.example
+
+# Caches / build info
+.cache/
+.vite/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

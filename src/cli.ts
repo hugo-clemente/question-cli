@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env node
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { HelpRequested, resolveInput } from "./input.ts";
 import { runPoll } from "./discord.ts";
@@ -11,7 +11,11 @@ function writeJsonAtomic(path: string, value: unknown): void {
     writeFileSync(tmp, JSON.stringify(value, null, 2));
     renameSync(tmp, path);
   } catch (e) {
-    try { unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort temp cleanup */
+    }
     throw e;
   }
 }
